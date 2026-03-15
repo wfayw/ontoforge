@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.database import engine, Base
+from app.database import engine, Base, init_sqlite_pragma
 from app.api.v1 import router as api_router
 
 settings = get_settings()
@@ -15,6 +15,7 @@ logging.getLogger("ontoforge").setLevel(logging.INFO)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await init_sqlite_pragma()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

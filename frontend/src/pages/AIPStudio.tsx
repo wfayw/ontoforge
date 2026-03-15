@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from 'react';
 import { Card, Button, Modal, Form, Input, Select, Space, Typography, message, Tabs, Tag, List, Empty, Slider, Popconfirm } from 'antd';
-import { PlusOutlined, SendOutlined, RobotOutlined, ThunderboltOutlined, DeleteOutlined, SearchOutlined, ToolOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { PlusOutlined, SendOutlined, RobotOutlined, ThunderboltOutlined, DeleteOutlined, SearchOutlined, ToolOutlined, CheckCircleOutlined, EditOutlined } from '@ant-design/icons';
 import { aipApi, ontologyApi } from '@/services/api';
 import { useI18n } from '@/i18n';
 import PageHeader from '@/components/PageHeader';
@@ -19,6 +19,7 @@ export default function AIPStudio() {
 
   const [providerModalOpen, setProviderModalOpen] = useState(false);
   const [agentModalOpen, setAgentModalOpen] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<AIAgent | null>(null);
   const [functionModalOpen, setFunctionModalOpen] = useState(false);
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>();
@@ -63,11 +64,38 @@ export default function AIPStudio() {
     } catch { message.error(t('aip.operationFailed')); }
   };
 
-  const createAgent = async (values: Record<string, unknown>) => {
+  const openCreateAgent = () => {
+    setEditingAgent(null);
+    agentForm.resetFields();
+    setAgentModalOpen(true);
+  };
+
+  const openEditAgent = (agent: AIAgent) => {
+    setEditingAgent(agent);
+    agentForm.setFieldsValue({
+      name: agent.name,
+      description: agent.description ?? '',
+      system_prompt: agent.system_prompt,
+      llm_provider_id: agent.llm_provider_id ?? undefined,
+      model_name: agent.model_name ?? undefined,
+      temperature: agent.temperature ?? 0.7,
+      tools: agent.tools ?? [],
+      status: agent.status ?? 'active',
+    });
+    setAgentModalOpen(true);
+  };
+
+  const saveAgent = async (values: Record<string, unknown>) => {
     try {
-      await aipApi.createAgent(values);
-      message.success(t('aip.agentCreated'));
+      if (editingAgent) {
+        await aipApi.updateAgent(editingAgent.id, values);
+        message.success(t('aip.agentUpdated'));
+      } else {
+        await aipApi.createAgent(values);
+        message.success(t('aip.agentCreated'));
+      }
       setAgentModalOpen(false);
+      setEditingAgent(null);
       agentForm.resetFields();
       fetchAll();
     } catch { message.error(t('aip.operationFailed')); }
@@ -145,7 +173,7 @@ export default function AIPStudio() {
         actions={
           <Space>
             <Button icon={<PlusOutlined />} onClick={() => setProviderModalOpen(true)}>{t('aip.llmProvider')}</Button>
-            <Button icon={<RobotOutlined />} onClick={() => setAgentModalOpen(true)}>{t('aip.agent')}</Button>
+            <Button icon={<RobotOutlined />} onClick={openCreateAgent}>{t('aip.agent')}</Button>
             <Button icon={<ThunderboltOutlined />} onClick={() => setFunctionModalOpen(true)}>{t('aip.function')}</Button>
           </Space>
         }
@@ -312,6 +340,7 @@ export default function AIPStudio() {
                   <List.Item
                     actions={[
                       <Button size="small" onClick={() => { setSelectedAgentId(a.id); newConversation(); }}>{t('aip.chat')}</Button>,
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openEditAgent(a)}>{t('common.edit')}</Button>,
                       <Popconfirm title={t('aip.deleteConfirm')} onConfirm={async () => { await aipApi.deleteAgent(a.id); fetchAll(); }}>
                         <Button size="small" danger icon={<DeleteOutlined />} />
                       </Popconfirm>,
@@ -398,8 +427,15 @@ export default function AIPStudio() {
         </Form>
       </Modal>
 
-      <Modal title={t('aip.createAgent')} open={agentModalOpen} onCancel={() => setAgentModalOpen(false)} onOk={() => agentForm.submit()} okText={t('common.create')} width={600}>
-        <Form form={agentForm} onFinish={createAgent} layout="vertical">
+      <Modal
+        title={editingAgent ? t('aip.editAgent') : t('aip.createAgent')}
+        open={agentModalOpen}
+        onCancel={() => { setAgentModalOpen(false); setEditingAgent(null); agentForm.resetFields(); }}
+        onOk={() => agentForm.submit()}
+        okText={editingAgent ? t('common.save') : t('common.create')}
+        width={600}
+      >
+        <Form form={agentForm} onFinish={saveAgent} layout="vertical">
           <Form.Item name="name" label={t('aip.agentName')} rules={[{ required: true }]}><Input placeholder="e.g. Data Analyst Agent" /></Form.Item>
           <Form.Item name="description" label={t('common.description')}><Input /></Form.Item>
           <Form.Item name="system_prompt" label={t('aip.systemPrompt')} rules={[{ required: true }]}>
@@ -420,6 +456,11 @@ export default function AIPStudio() {
               { value: 'instance_write', label: t('aip.toolInstanceWrite') },
             ]} />
           </Form.Item>
+          {editingAgent && (
+            <Form.Item name="status" label={t('common.status')}>
+              <Select options={[{ value: 'active', label: t('aip.statusActive') }, { value: 'draft', label: t('aip.statusDraft') }]} />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
