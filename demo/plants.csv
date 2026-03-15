@@ -1,0 +1,5 @@
+plant_code,name,city,country,capacity_per_day,product_line,status
+PLT-SH,上海浦东工厂,上海,中国,800,SUV,运行中
+PLT-CQ,重庆两江工厂,重庆,中国,600,轿车,运行中
+PLT-CC,长春一汽工厂,长春,中国,1000,新能源,运行中
+PLT-GZ,广州南沙工厂,广州,中国,500,MPV,维护中

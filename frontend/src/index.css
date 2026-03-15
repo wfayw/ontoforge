@@ -1,0 +1,168 @@
+/* ── Edge-style Design Tokens ──────────────────────── */
+:root {
+  --font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --primary: #0078D4;
+  --primary-hover: #106EBE;
+  --transition: 150ms ease;
+
+  /* Spacing scale */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+
+  /* Semantic colors — consistent across light/dark */
+  --color-blue: #0078D4;
+  --color-green: #107C10;
+  --color-yellow: #CA8A04;
+  --color-pink: #C239B3;
+  --color-cyan: #0E7090;
+  --color-purple: #7B61FF;
+}
+
+/* ── Light Theme ─────────────────────────────────── */
+:root[data-theme="light"] {
+  --bg-body: #F5F5F5;
+  --bg-surface: #FFFFFF;
+  --bg-sidebar: #F0F0F0;
+  --bg-header: #FAFAFA;
+  --bg-elevated: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --bg-hover: rgba(0, 0, 0, 0.04);
+  --bg-active: rgba(0, 120, 212, 0.08);
+
+  --border: rgba(0, 0, 0, 0.09);
+  --border-subtle: rgba(0, 0, 0, 0.05);
+
+  --text-primary: #1B1B1B;
+  --text-secondary: #616161;
+  --text-tertiary: #9E9E9E;
+  --text-on-primary: #FFFFFF;
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.03);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.03);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.10);
+
+  --scrollbar-thumb: #C4C4C4;
+  --scrollbar-thumb-hover: #A0A0A0;
+
+  --stat-value: #1B1B1B;
+  --card-border: rgba(0, 0, 0, 0.07);
+
+  --color-blue: #0078D4;
+  --color-green: #107C10;
+  --color-yellow: #CA8A04;
+  --color-pink: #C239B3;
+  --color-cyan: #0E7090;
+  --color-purple: #7B61FF;
+}
+
+/* ── Dark Theme ──────────────────────────────────── */
+:root[data-theme="dark"] {
+  --bg-body: #1B1B1B;
+  --bg-surface: #262626;
+  --bg-sidebar: #1F1F1F;
+  --bg-header: #1F1F1F;
+  --bg-elevated: #303030;
+  --bg-input: #2B2B2B;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-active: rgba(0, 120, 212, 0.12);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-subtle: rgba(255, 255, 255, 0.05);
+
+  --text-primary: #E0E0E0;
+  --text-secondary: #999;
+  --text-tertiary: #666;
+  --text-on-primary: #FFFFFF;
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.28);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.36);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.4);
+
+  --scrollbar-thumb: rgba(255,255,255,0.12);
+  --scrollbar-thumb-hover: rgba(255,255,255,0.2);
+
+  --stat-value: #E0E0E0;
+  --card-border: rgba(255, 255, 255, 0.06);
+
+  --color-blue: #4EA8E6;
+  --color-green: #3CB043;
+  --color-yellow: #E5A100;
+  --color-pink: #E066D0;
+  --color-cyan: #26B0C9;
+  --color-purple: #9B85FF;
+}
+
+/* ── Global Reset ────────────────────────────────── */
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-family);
+  background: var(--bg-body);
+  color: var(--text-primary);
+  min-height: 100vh;
+  transition: background var(--transition), color var(--transition);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ── Focus ───────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
+/* ── Scrollbar ───────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* ── Ant Design Overrides ────────────────────────── */
+.ant-layout-sider {
+  border-right: none !important;
+}
+
+.react-flow__node {
+  border-radius: var(--radius-lg) !important;
+}
+
+.ant-menu-item {
+  border-radius: var(--radius) !important;
+  margin: 2px 8px !important;
+}
+
+/* Unified Card elevation */
+.ant-card {
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--radius-lg) !important;
+  transition: box-shadow var(--transition), background var(--transition);
+}

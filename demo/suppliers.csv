@@ -1,0 +1,9 @@
+supplier_code,name,country,city,contact_email,rating,established_year
+SUP-001,宝钢特钢,中国,上海,sales@baosteel-special.com,A,1998
+SUP-002,Bosch Automotive,德国,Stuttgart,procurement@bosch.de,A,1886
+SUP-003,Denso Corporation,日本,Kariya,global@denso.co.jp,A,1949
+SUP-004,万向集团,中国,杭州,sourcing@wanxiang.com,B,1969
+SUP-005,Continental AG,德国,Hanover,supply@continental.de,A,1871
+SUP-006,Aisin Seiki,日本,Kariya,parts@aisin.co.jp,B,1965
+SUP-007,中信戴卡,中国,秦皇岛,wheels@citicdicastal.com,A,1988
+SUP-008,ZF Friedrichshafen,德国,Friedrichshafen,oem@zf.com,A,1915

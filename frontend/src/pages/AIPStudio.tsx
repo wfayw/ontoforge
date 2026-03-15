@@ -1,0 +1,441 @@
+import { useEffect, useState, useRef } from 'react';
+import { Card, Button, Modal, Form, Input, Select, Space, Typography, message, Tabs, Tag, List, Empty, Slider, Popconfirm } from 'antd';
+import { PlusOutlined, SendOutlined, RobotOutlined, ThunderboltOutlined, DeleteOutlined, SearchOutlined, ToolOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { aipApi, ontologyApi } from '@/services/api';
+import { useI18n } from '@/i18n';
+import PageHeader from '@/components/PageHeader';
+import type { LLMProvider, AIAgent, AIPFunction, Conversation, ChatMessage, ObjectType } from '@/types';
+
+const { Text } = Typography;
+const { TextArea } = Input;
+
+export default function AIPStudio() {
+  const { t } = useI18n();
+  const [providers, setProviders] = useState<LLMProvider[]>([]);
+  const [agents, setAgents] = useState<AIAgent[]>([]);
+  const [functions, setFunctions] = useState<AIPFunction[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
+
+  const [providerModalOpen, setProviderModalOpen] = useState(false);
+  const [agentModalOpen, setAgentModalOpen] = useState(false);
+  const [functionModalOpen, setFunctionModalOpen] = useState(false);
+
+  const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>();
+  const [conversationId, setConversationId] = useState<string | undefined>();
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [toolCallsMap, setToolCallsMap] = useState<Map<number, Array<{ tool: string; args: Record<string, unknown>; result: unknown }>>>(new Map());
+
+  const [nlQuery, setNlQuery] = useState('');
+  const [nlResult, setNlResult] = useState<{ interpreted_query: string; results: Record<string, unknown>[] } | null>(null);
+  const [nlLoading, setNlLoading] = useState(false);
+
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const [providerForm] = Form.useForm();
+  const [agentForm] = Form.useForm();
+  const [functionForm] = Form.useForm();
+
+  const fetchAll = async () => {
+    const [p, a, f, c, ot] = await Promise.all([
+      aipApi.listProviders(), aipApi.listAgents(), aipApi.listFunctions(),
+      aipApi.listConversations(), ontologyApi.listObjectTypes(),
+    ]);
+    setProviders(p.data);
+    setAgents(a.data);
+    setFunctions(f.data);
+    setConversations(c.data);
+    setObjectTypes(ot.data);
+  };
+
+  useEffect(() => { fetchAll(); }, []);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+
+  const createProvider = async (values: Record<string, unknown>) => {
+    try {
+      await aipApi.createProvider(values);
+      message.success(t('aip.providerAdded'));
+      setProviderModalOpen(false);
+      providerForm.resetFields();
+      fetchAll();
+    } catch { message.error(t('aip.operationFailed')); }
+  };
+
+  const createAgent = async (values: Record<string, unknown>) => {
+    try {
+      await aipApi.createAgent(values);
+      message.success(t('aip.agentCreated'));
+      setAgentModalOpen(false);
+      agentForm.resetFields();
+      fetchAll();
+    } catch { message.error(t('aip.operationFailed')); }
+  };
+
+  const createFunction = async (values: Record<string, unknown>) => {
+    try {
+      await aipApi.createFunction(values);
+      message.success(t('aip.functionCreated'));
+      setFunctionModalOpen(false);
+      functionForm.resetFields();
+      fetchAll();
+    } catch { message.error(t('aip.operationFailed')); }
+  };
+
+  const sendMessage = async () => {
+    if (!chatInput.trim()) return;
+    const userMsg: ChatMessage = { role: 'user', content: chatInput };
+    setChatMessages((prev) => [...prev, userMsg]);
+    setChatInput('');
+    setChatLoading(true);
+    try {
+      const { data } = await aipApi.chat({
+        agent_id: selectedAgentId,
+        conversation_id: conversationId,
+        message: chatInput,
+      });
+      setConversationId(data.conversation_id);
+      setChatMessages((prev) => {
+        const idx = prev.length;
+        if (data.tool_calls?.length) {
+          setToolCallsMap((m) => new Map(m).set(idx, data.tool_calls));
+        }
+        return [...prev, data.message];
+      });
+      aipApi.listConversations().then(({ data: convs }) => setConversations(convs));
+    } catch {
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: t('aip.chatError') }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const loadConversation = async (conv: Conversation) => {
+    setConversationId(conv.id);
+    setSelectedAgentId(conv.agent_id || undefined);
+    setToolCallsMap(new Map());
+    setChatMessages(conv.messages.filter((m: ChatMessage) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls?.length)));
+  };
+
+  const newConversation = () => {
+    setConversationId(undefined);
+    setChatMessages([]);
+    setToolCallsMap(new Map());
+  };
+
+  const executeNlQuery = async () => {
+    if (!nlQuery.trim()) return;
+    setNlLoading(true);
+    try {
+      const { data } = await aipApi.nlQuery({ query: nlQuery });
+      setNlResult(data);
+    } catch {
+      message.error(t('aip.queryFailed'));
+    } finally {
+      setNlLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <PageHeader
+        title={t('aip.title')}
+        subtitle={t('aip.subtitle')}
+        actions={
+          <Space>
+            <Button icon={<PlusOutlined />} onClick={() => setProviderModalOpen(true)}>{t('aip.llmProvider')}</Button>
+            <Button icon={<RobotOutlined />} onClick={() => setAgentModalOpen(true)}>{t('aip.agent')}</Button>
+            <Button icon={<ThunderboltOutlined />} onClick={() => setFunctionModalOpen(true)}>{t('aip.function')}</Button>
+          </Space>
+        }
+      />
+
+      <Tabs items={[
+        {
+          key: 'chat',
+          label: <><RobotOutlined /> {t('aip.agentChat')}</>,
+          children: (
+            <div style={{ display: 'flex', gap: 16, height: 'calc(100vh - 200px)', minHeight: 400 }}>
+              <Card style={{ width: 200, background: 'var(--bg-surface)', border: '1px solid var(--card-border)', overflow: 'auto', flexShrink: 0 }}>
+                <Button block size="small" onClick={newConversation} style={{ marginBottom: 8 }}>{t('aip.newChat')}</Button>
+                <Select
+                  placeholder={t('aip.selectAgent')}
+                  allowClear
+                  style={{ width: '100%', marginBottom: 12 }}
+                  value={selectedAgentId}
+                  onChange={(v) => { setSelectedAgentId(v); newConversation(); }}
+                  options={agents.map((a) => ({ value: a.id, label: a.name }))}
+                />
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12, display: 'block', marginBottom: 8 }}>{t('aip.history')}</Text>
+                <List
+                  dataSource={conversations}
+                  size="small"
+                  renderItem={(c) => (
+                    <List.Item
+                      style={{ cursor: 'pointer', padding: '4px 0', borderBottom: '1px solid var(--border)' }}
+                      onClick={() => loadConversation(c)}
+                    >
+                      <Text ellipsis style={{ color: conversationId === c.id ? 'var(--primary)' : 'var(--text-secondary)', fontSize: 12 }}>{c.title || t('aip.untitled')}</Text>
+                    </List.Item>
+                  )}
+                  locale={{ emptyText: <Empty description={t('aip.noConversations')} image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+                />
+              </Card>
+
+              <Card style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column' }} styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}>
+                <div style={{ flex: 1, overflow: 'auto', padding: '8px 0' }}>
+                  {chatMessages.length === 0 && (
+                    <div style={{ textAlign: 'center', padding: '80px 0', color: 'var(--text-tertiary)' }}>
+                      <RobotOutlined style={{ fontSize: 48, marginBottom: 16, display: 'block' }} />
+                      <Text style={{ color: 'var(--text-tertiary)', whiteSpace: 'pre-line' }}>{t('aip.chatEmptyText')}</Text>
+                    </div>
+                  )}
+                  {chatMessages.map((m, i) => (
+                    <div key={i}>
+                      {toolCallsMap.get(i) && (
+                        <div style={{ margin: '4px 0 8px', display: 'flex', justifyContent: 'flex-start' }}>
+                          <div style={{ maxWidth: '80%', width: '100%' }}>
+                            {toolCallsMap.get(i)!.map((tc, ti) => (
+                              <div key={ti} style={{
+                                background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                                borderRadius: 8, padding: '8px 12px', marginBottom: 4, fontSize: 12,
+                              }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                                  <ToolOutlined style={{ color: 'var(--color-purple)', fontSize: 13 }} />
+                                  <Text strong style={{ color: 'var(--color-purple)', fontSize: 12 }}>{tc.tool}</Text>
+                                  <CheckCircleOutlined style={{ color: 'var(--color-green)', fontSize: 11, marginLeft: 'auto' }} />
+                                </div>
+                                {tc.args && Object.keys(tc.args).length > 0 && (
+                                  <div style={{ color: 'var(--text-tertiary)', fontSize: 11, marginBottom: 2 }}>
+                                    {Object.entries(tc.args).map(([k, v]) => (
+                                      <Tag key={k} style={{ fontSize: 11, marginBottom: 2 }}>{k}: {typeof v === 'object' ? JSON.stringify(v) : String(v)}</Tag>
+                                    ))}
+                                  </div>
+                                )}
+                                {tc.result != null && (
+                                  <div style={{
+                                    background: 'var(--bg-surface)', borderRadius: 4, padding: '4px 8px', marginTop: 4,
+                                    fontSize: 11, color: 'var(--text-secondary)', maxHeight: 120, overflow: 'auto',
+                                    fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                                  }}>
+                                    {typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 12 }}>
+                        <div style={{
+                          maxWidth: '75%', padding: '10px 14px', borderRadius: 12,
+                          background: m.role === 'user' ? 'var(--primary)' : 'var(--bg-elevated)',
+                          color: m.role === 'user' ? '#fff' : 'var(--text-primary)',
+                          fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                        }}>
+                          {m.content}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={chatEndRef} />
+                </div>
+                <div style={{ display: 'flex', gap: 8, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
+                  <Input
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onPressEnter={sendMessage}
+                    placeholder={t('aip.chatPlaceholder')}
+                    disabled={chatLoading}
+                    style={{ borderRadius: 20 }}
+                  />
+                  <Button type="primary" shape="circle" icon={<SendOutlined />} onClick={sendMessage} loading={chatLoading} />
+                </div>
+              </Card>
+            </div>
+          ),
+        },
+        {
+          key: 'nl-query',
+          label: <><SearchOutlined /> {t('aip.nlQuery')}</>,
+          children: (
+            <Card style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}>
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Input
+                    value={nlQuery}
+                    onChange={(e) => setNlQuery(e.target.value)}
+                    onPressEnter={executeNlQuery}
+                    placeholder={t('aip.nlPlaceholder')}
+                    size="large"
+                  />
+                  <Button type="primary" size="large" icon={<SearchOutlined />} onClick={executeNlQuery} loading={nlLoading}>{t('common.query')}</Button>
+                </div>
+                {nlResult && (
+                  <>
+                    <Card size="small" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+                      <Text style={{ color: 'var(--primary)' }}>{t('aip.interpreted', { query: nlResult.interpreted_query })}</Text>
+                    </Card>
+                    <List
+                      dataSource={nlResult.results}
+                      renderItem={(item: Record<string, unknown>) => (
+                        <List.Item style={{ borderBottom: '1px solid var(--border)' }}>
+                          <List.Item.Meta
+                            title={<Text style={{ color: 'var(--text-primary)' }}>{String(item.display_name || item.id)}</Text>}
+                            description={
+                              <Space wrap>
+                                {Object.entries(item.properties as Record<string, unknown> || {}).map(([k, v]) => (
+                                  <Tag key={k}>{k}: {String(v)}</Tag>
+                                ))}
+                              </Space>
+                            }
+                          />
+                        </List.Item>
+                      )}
+                      locale={{ emptyText: <Empty description={t('aip.noResults')} /> }}
+                    />
+                  </>
+                )}
+              </Space>
+            </Card>
+          ),
+        },
+        {
+          key: 'agents',
+          label: t('aip.agents'),
+          children: (
+            <Card style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}>
+              <List
+                dataSource={agents}
+                renderItem={(a) => (
+                  <List.Item
+                    actions={[
+                      <Button size="small" onClick={() => { setSelectedAgentId(a.id); newConversation(); }}>{t('aip.chat')}</Button>,
+                      <Popconfirm title={t('aip.deleteConfirm')} onConfirm={async () => { await aipApi.deleteAgent(a.id); fetchAll(); }}>
+                        <Button size="small" danger icon={<DeleteOutlined />} />
+                      </Popconfirm>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      avatar={<RobotOutlined style={{ fontSize: 24, color: 'var(--color-purple)' }} />}
+                      title={<Text style={{ color: 'var(--text-primary)' }}>{a.name}</Text>}
+                      description={
+                        <Space direction="vertical" size={2}>
+                          <Text style={{ color: 'var(--text-secondary)' }}>{a.description}</Text>
+                          <Space>
+                            <Tag color={a.status === 'active' ? 'green' : 'blue'}>{a.status}</Tag>
+                            {a.tools.map((tool: string) => <Tag key={tool}>{tool}</Tag>)}
+                          </Space>
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+                locale={{ emptyText: <Empty description={t('aip.agentEmptyText')} /> }}
+              />
+            </Card>
+          ),
+        },
+        {
+          key: 'functions',
+          label: t('aip.aipFunctions'),
+          children: (
+            <Card style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}>
+              <List
+                dataSource={functions}
+                renderItem={(fn) => (
+                  <List.Item actions={[<Button size="small">{t('common.execute')}</Button>]}>
+                    <List.Item.Meta
+                      avatar={<ThunderboltOutlined style={{ fontSize: 24, color: 'var(--color-yellow)' }} />}
+                      title={<Text style={{ color: 'var(--text-primary)' }}>{fn.display_name}</Text>}
+                      description={<Text style={{ color: 'var(--text-secondary)' }}>{fn.description || fn.prompt_template.substring(0, 100)}...</Text>}
+                    />
+                  </List.Item>
+                )}
+                locale={{ emptyText: <Empty description={t('aip.functionEmptyText')} /> }}
+              />
+            </Card>
+          ),
+        },
+        {
+          key: 'providers',
+          label: t('aip.llmProviders'),
+          children: (
+            <Card style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}>
+              <List
+                dataSource={providers}
+                renderItem={(p) => (
+                  <List.Item
+                    actions={[
+                      <Popconfirm title={t('aip.deleteConfirm')} onConfirm={async () => { await aipApi.deleteProvider(p.id); fetchAll(); }}>
+                        <Button size="small" danger icon={<DeleteOutlined />} />
+                      </Popconfirm>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      title={<Text style={{ color: 'var(--text-primary)' }}>{p.name}</Text>}
+                      description={<Space><Tag>{p.provider_type}</Tag><Tag>{p.default_model}</Tag><Tag color={p.is_active ? 'green' : 'red'}>{p.is_active ? 'Active' : 'Inactive'}</Tag></Space>}
+                    />
+                  </List.Item>
+                )}
+                locale={{ emptyText: <Empty description={t('aip.providerEmptyText')} /> }}
+              />
+            </Card>
+          ),
+        },
+      ]} />
+
+      <Modal title={t('aip.addProvider')} open={providerModalOpen} onCancel={() => setProviderModalOpen(false)} onOk={() => providerForm.submit()} okText={t('common.add')}>
+        <Form form={providerForm} onFinish={createProvider} layout="vertical">
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}><Input placeholder="e.g. OpenAI Production" /></Form.Item>
+          <Form.Item name="provider_type" label={t('aip.providerType')} rules={[{ required: true }]}>
+            <Select options={[{ value: 'openai', label: 'OpenAI' }, { value: 'anthropic', label: 'Anthropic' }, { value: 'local', label: 'Local / Custom' }]} />
+          </Form.Item>
+          <Form.Item name="base_url" label={t('aip.baseUrl')} rules={[{ required: true }]}><Input placeholder="https://api.openai.com/v1" /></Form.Item>
+          <Form.Item name="api_key" label={t('aip.apiKey')}><Input.Password placeholder="sk-..." /></Form.Item>
+          <Form.Item name="default_model" label={t('aip.defaultModel')} rules={[{ required: true }]}><Input placeholder="gpt-4o-mini" /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title={t('aip.createAgent')} open={agentModalOpen} onCancel={() => setAgentModalOpen(false)} onOk={() => agentForm.submit()} okText={t('common.create')} width={600}>
+        <Form form={agentForm} onFinish={createAgent} layout="vertical">
+          <Form.Item name="name" label={t('aip.agentName')} rules={[{ required: true }]}><Input placeholder="e.g. Data Analyst Agent" /></Form.Item>
+          <Form.Item name="description" label={t('common.description')}><Input /></Form.Item>
+          <Form.Item name="system_prompt" label={t('aip.systemPrompt')} rules={[{ required: true }]}>
+            <TextArea rows={4} placeholder="You are a helpful data analyst..." />
+          </Form.Item>
+          <Form.Item name="llm_provider_id" label={t('aip.llmProvider')}>
+            <Select allowClear options={providers.map((p) => ({ value: p.id, label: p.name }))} placeholder={t('aip.useDefault')} />
+          </Form.Item>
+          <Form.Item name="model_name" label={t('aip.modelOverride')}><Input placeholder={t('aip.modelOverridePlaceholder')} /></Form.Item>
+          <Form.Item name="temperature" label={t('aip.temperature')} initialValue={0.7}>
+            <Slider min={0} max={2} step={0.1} />
+          </Form.Item>
+          <Form.Item name="tools" label={t('aip.tools')}>
+            <Select mode="multiple" options={[
+              { value: 'ontology_query', label: t('aip.toolOntologyQuery') },
+              { value: 'action_execute', label: t('aip.toolActionExecute') },
+              { value: 'analytics', label: t('aip.toolAnalytics') },
+              { value: 'instance_write', label: t('aip.toolInstanceWrite') },
+            ]} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title={t('aip.createFunction')} open={functionModalOpen} onCancel={() => setFunctionModalOpen(false)} onOk={() => functionForm.submit()} okText={t('common.create')} width={600}>
+        <Form form={functionForm} onFinish={createFunction} layout="vertical">
+          <Form.Item name="name" label={t('aip.apiNameLabel')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="display_name" label={t('ontology.displayName')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="description" label={t('common.description')}><Input /></Form.Item>
+          <Form.Item name="prompt_template" label={t('aip.promptTemplate')} rules={[{ required: true }]}>
+            <TextArea rows={4} placeholder={t('aip.promptTemplatePlaceholder')} />
+          </Form.Item>
+          <Form.Item name="llm_provider_id" label={t('aip.llmProvider')}>
+            <Select allowClear options={providers.map((p) => ({ value: p.id, label: p.name }))} placeholder={t('aip.useDefault')} />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </div>
+  );
+}

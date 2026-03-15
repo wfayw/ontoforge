@@ -1,0 +1,153 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.models.user import User
+from app.models.aip import LLMProvider, AIAgent, AIPFunction, Conversation
+from app.schemas.aip import (
+    LLMProviderCreate, LLMProviderResponse,
+    AIAgentCreate, AIAgentUpdate, AIAgentResponse,
+    AIPFunctionCreate, AIPFunctionResponse,
+    ChatRequest, ChatResponse, ConversationResponse,
+    NLQueryRequest, NLQueryResponse,
+)
+from app.services.auth_service import get_current_user
+from app.services.aip_service import process_chat, process_nl_query, execute_aip_function
+
+router = APIRouter()
+
+
+# ── LLM Providers ────────────────────────────────────────────
+
+@router.get("/providers", response_model=list[LLMProviderResponse])
+async def list_providers(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(LLMProvider).order_by(LLMProvider.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.post("/providers", response_model=LLMProviderResponse, status_code=201)
+async def create_provider(data: LLMProviderCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    provider = LLMProvider(
+        name=data.name,
+        provider_type=data.provider_type,
+        base_url=data.base_url,
+        api_key_encrypted=data.api_key or "",
+        default_model=data.default_model,
+    )
+    db.add(provider)
+    await db.flush()
+    await db.refresh(provider)
+    return provider
+
+
+@router.delete("/providers/{provider_id}", status_code=204)
+async def delete_provider(provider_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    await db.delete(p)
+
+
+# ── AI Agents ─────────────────────────────────────────────────
+
+@router.get("/agents", response_model=list[AIAgentResponse])
+async def list_agents(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(AIAgent).order_by(AIAgent.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.post("/agents", response_model=AIAgentResponse, status_code=201)
+async def create_agent(data: AIAgentCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    agent = AIAgent(**data.model_dump())
+    db.add(agent)
+    await db.flush()
+    await db.refresh(agent)
+    return agent
+
+
+@router.get("/agents/{agent_id}", response_model=AIAgentResponse)
+async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(AIAgent).where(AIAgent.id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
+
+
+@router.patch("/agents/{agent_id}", response_model=AIAgentResponse)
+async def update_agent(agent_id: str, data: AIAgentUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(AIAgent).where(AIAgent.id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(agent, field, value)
+    await db.flush()
+    await db.refresh(agent)
+    return agent
+
+
+@router.delete("/agents/{agent_id}", status_code=204)
+async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(AIAgent).where(AIAgent.id == agent_id))
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    await db.delete(agent)
+
+
+# ── AIP Functions ─────────────────────────────────────────────
+
+@router.get("/functions", response_model=list[AIPFunctionResponse])
+async def list_functions(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(AIPFunction).order_by(AIPFunction.created_at.desc()))
+    return result.scalars().all()
+
+
+@router.post("/functions", response_model=AIPFunctionResponse, status_code=201)
+async def create_function(data: AIPFunctionCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    fn = AIPFunction(**data.model_dump())
+    db.add(fn)
+    await db.flush()
+    await db.refresh(fn)
+    return fn
+
+
+@router.post("/functions/{func_id}/execute")
+async def run_function(func_id: str, inputs: dict, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(AIPFunction).where(AIPFunction.id == func_id))
+    fn = result.scalar_one_or_none()
+    if not fn:
+        raise HTTPException(status_code=404, detail="Function not found")
+    return await execute_aip_function(db, fn, inputs)
+
+
+# ── Chat & Conversations ─────────────────────────────────────
+
+@router.post("/chat", response_model=ChatResponse)
+async def chat(data: ChatRequest, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    return await process_chat(db, data)
+
+
+@router.get("/conversations", response_model=list[ConversationResponse])
+async def list_conversations(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(Conversation).order_by(Conversation.updated_at.desc()))
+    return result.scalars().all()
+
+
+@router.get("/conversations/{conv_id}", response_model=ConversationResponse)
+async def get_conversation(conv_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    result = await db.execute(select(Conversation).where(Conversation.id == conv_id))
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conv
+
+
+# ── Natural Language Query ────────────────────────────────────
+
+@router.post("/nl-query", response_model=NLQueryResponse)
+async def nl_query(data: NLQueryRequest, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    return await process_nl_query(db, data)
