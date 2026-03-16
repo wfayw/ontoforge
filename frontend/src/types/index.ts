@@ -177,6 +177,30 @@ export interface ChatMessage {
   tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
 }
 
+export interface Document {
+  id: string;
+  name: string;
+  description: string | null;
+  chunk_count: number;
+  file_size: number;
+  metadata_: Record<string, unknown>;
+  created_at: string;
+  content?: string;
+  chunks?: string[];
+}
+
+export interface AuditLog {
+  id: string;
+  user_id: string | null;
+  username: string;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  details: Record<string, unknown>;
+  ip_address: string | null;
+  created_at: string;
+}
+
 export interface PaginatedResponse<T> {
   items: T[];
   total: number;

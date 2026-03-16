@@ -10,7 +10,7 @@
  * - 适应 1000+ 对象的渐进式探索
  */
 
-import { useCallback, useEffect, useRef, useState, memo } from 'react';
+import React, { useCallback, useEffect, useRef, useState, memo } from 'react';
 import {
   ReactFlow,
   Background,
@@ -28,8 +28,15 @@ import {
   type NodeProps,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { Checkbox, Space, Tooltip } from 'antd';
-import { CompressOutlined, ExpandOutlined, LoadingOutlined } from '@ant-design/icons';
+import { Checkbox, Input, Space, Tooltip } from 'antd';
+import {
+  AimOutlined,
+  CompressOutlined,
+  DatabaseOutlined,
+  ExpandOutlined,
+  LoadingOutlined,
+  SearchOutlined,
+} from '@ant-design/icons';
 import { instanceApi } from '@/services/api';
 import type { ObjectType, LinkType } from '@/types';
 
@@ -319,6 +326,33 @@ function GraphInner({
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
   const [stats, setStats] = useState({ nodes: 1, edges: 0, expanded: 0 });
 
+  // Search overlay
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearchQuery(searchQuery), 300);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // Breadcrumb navigation
+  const [breadcrumbs, setBreadcrumbs] = useState<Array<{ id: string; name: string }>>([
+    { id: rootObjectId, name: rootDisplayName },
+  ]);
+
+  // Context menu
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+
+  // ─── Search helper ────────────────────────────────────
+
+  const nodeMatchesSearch = useCallback((nd: { displayName: string; typeName?: string }, q: string) => {
+    if (!q.trim()) return true;
+    const t = q.trim().toLowerCase();
+    return (
+      (nd.displayName || '').toLowerCase().includes(t) ||
+      (nd.typeName || '').toLowerCase().includes(t)
+    );
+  }, []);
+
   // ─── Build visible graph ───────────────────────────────
 
   const rebuildGraph = useCallback(() => {
@@ -348,21 +382,33 @@ function GraphInner({
         hiddenCount = cached.neighbors.length
           - cached.neighbors.filter((n) => visibleSet.has(n.id)).length;
       }
+      const nodeData = {
+        id,
+        displayName: nd.displayName,
+        objectTypeId: nd.objectTypeId,
+        typeName: getTypeName(nd.objectTypeId),
+        typeColor: getColor(nd.objectTypeId),
+        expanded: isExpanded,
+        loading: false,
+        hiddenCount: isExpanded ? 0 : hiddenCount,
+        isRoot: id === rootObjectId,
+      } satisfies GraphNodeData;
+      const matches = nodeMatchesSearch(
+        { displayName: nd.displayName, typeName: getTypeName(nd.objectTypeId) },
+        debouncedSearchQuery,
+      );
+      const nodeClassName =
+        debouncedSearchQuery && !matches
+          ? 'graph-node-dimmed'
+          : debouncedSearchQuery && matches
+            ? 'graph-node-highlight'
+            : '';
       return {
         id,
         type: 'graphNode',
         position: pos,
-        data: {
-          id,
-          displayName: nd.displayName,
-          objectTypeId: nd.objectTypeId,
-          typeName: getTypeName(nd.objectTypeId),
-          typeColor: getColor(nd.objectTypeId),
-          expanded: isExpanded,
-          loading: false,
-          hiddenCount: isExpanded ? 0 : hiddenCount,
-          isRoot: id === rootObjectId,
-        } satisfies GraphNodeData,
+        className: nodeClassName,
+        data: nodeData,
       };
     });
 
@@ -390,7 +436,18 @@ function GraphInner({
     setStats({ nodes: rfNodes.length, edges: rfEdges.length, expanded: expandedSet.current.size });
 
     requestAnimationFrame(() => fitView({ padding: 0.12, duration: 300 }));
-  }, [visibleNodeIds, hiddenTypes, rootObjectId, getColor, getTypeName, setNodes, setEdges, fitView]);
+  }, [
+    visibleNodeIds,
+    hiddenTypes,
+    rootObjectId,
+    getColor,
+    getTypeName,
+    debouncedSearchQuery,
+    nodeMatchesSearch,
+    setNodes,
+    setEdges,
+    fitView,
+  ]);
 
   // ─── Init root ─────────────────────────────────────────
 
@@ -407,6 +464,7 @@ function GraphInner({
       objectTypeId: rootObjectTypeId,
     });
     commitVisible(new Set([rootObjectId]));
+    setBreadcrumbs([{ id: rootObjectId, name: rootDisplayName }]);
 
     expandNode(rootObjectId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -464,6 +522,13 @@ function GraphInner({
     }
 
     commitVisible(newVisible);
+
+    setBreadcrumbs((prev) => {
+      if (prev.some((b) => b.id === nodeId)) return prev;
+      const nd = visNodeMap.current.get(nodeId);
+      const name = nd?.displayName || nodeId.slice(0, 8);
+      return [...prev, { id: nodeId, name }];
+    });
   }, [setNodes, commitVisible]);
 
   const collapseNode = useCallback((nodeId: string) => {
@@ -514,9 +579,21 @@ function GraphInner({
   );
 
   const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node) => { onNodeSelect?.(node.id); },
-    [onNodeSelect],
+    (_event: React.MouseEvent, node: Node) => {
+      const idx = breadcrumbs.findIndex((b) => b.id === node.id);
+      if (idx >= 0) {
+        setBreadcrumbs((prev) => prev.slice(0, idx + 1));
+        fitView({ nodes: [{ id: node.id }], padding: 0.5, duration: 300 });
+      }
+      onNodeSelect?.(node.id);
+    },
+    [onNodeSelect, breadcrumbs, fitView],
   );
+
+  const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node) => {
+    event.preventDefault();
+    setContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+  }, []);
 
   // ─── Type filter ───────────────────────────────────────
 
@@ -543,7 +620,46 @@ function GraphInner({
   // ─── Render ────────────────────────────────────────────
 
   return (
-    <div style={{ height, position: 'relative', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
+    <div
+      style={{ height, position: 'relative', borderRadius: 'var(--radius)', overflow: 'hidden' }}
+      onClick={() => setContextMenu(null)}
+    >
+      {/* Search overlay */}
+      <div className="graph-search-overlay">
+        <Input
+          prefix={<SearchOutlined />}
+          placeholder="Search nodes..."
+          allowClear
+          size="small"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{ borderRadius: 6 }}
+        />
+      </div>
+
+      {/* Breadcrumb navigation */}
+      {breadcrumbs.length > 1 && (
+        <div
+          className="graph-breadcrumb"
+          style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 10 }}
+        >
+          {breadcrumbs.map((b, idx) => (
+            <React.Fragment key={b.id}>
+              {idx > 0 && <span style={{ color: 'var(--text-tertiary)' }}>›</span>}
+              <span
+                className={`graph-breadcrumb-item ${idx === breadcrumbs.length - 1 ? 'active' : ''}`}
+                onClick={() => {
+                  setBreadcrumbs((prev) => prev.slice(0, idx + 1));
+                  fitView({ nodes: [{ id: b.id }], padding: 0.5, duration: 300 });
+                }}
+              >
+                {b.name}
+              </span>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
       {/* Control panel */}
       <div style={{
         position: 'absolute', top: 10, left: 10, zIndex: 10,
@@ -599,6 +715,7 @@ function GraphInner({
         onEdgesChange={onEdgesChange}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeClick={onNodeClick}
+        onNodeContextMenu={onNodeContextMenu}
         nodeTypes={NODE_TYPES}
         fitView
         minZoom={0.05}
@@ -618,6 +735,57 @@ function GraphInner({
           zoomable
         />
       </ReactFlow>
+
+      {/* Context menu */}
+      {contextMenu && (
+        <div
+          className="graph-context-menu"
+          style={{
+            position: 'fixed',
+            left: contextMenu.x,
+            top: contextMenu.y,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="graph-context-menu-item"
+            onClick={() => {
+              const d = nodes.find((n) => n.id === contextMenu.nodeId)?.data as GraphNodeData | undefined;
+              if (d?.expanded) collapseNode(contextMenu.nodeId);
+              else expandNode(contextMenu.nodeId);
+              setContextMenu(null);
+            }}
+          >
+            {(nodes.find((n) => n.id === contextMenu.nodeId)?.data as GraphNodeData)?.expanded ? (
+              <>
+                <CompressOutlined /> Collapse
+              </>
+            ) : (
+              <>
+                <ExpandOutlined /> Expand
+              </>
+            )}
+          </div>
+          <div
+            className="graph-context-menu-item"
+            onClick={() => {
+              onNodeSelect?.(contextMenu.nodeId);
+              setContextMenu(null);
+            }}
+          >
+            <DatabaseOutlined /> View Details
+          </div>
+          <div
+            className="graph-context-menu-item"
+            onClick={() => {
+              fitView({ nodes: [{ id: contextMenu.nodeId }], padding: 0.5, duration: 300 });
+              setContextMenu(null);
+            }}
+          >
+            <AimOutlined /> Focus
+          </div>
+        </div>
+      )}
     </div>
   );
 }

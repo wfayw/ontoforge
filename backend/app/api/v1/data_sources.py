@@ -8,7 +8,8 @@ from app.models.data_integration import DataSource
 from app.schemas.data_integration import (
     DataSourceCreate, DataSourceUpdate, DataSourceResponse, DataPreview,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, require_editor
+from app.services.audit_service import create_audit_log
 from app.services.data_integration_service import test_connection, preview_data, upload_csv
 
 router = APIRouter()
@@ -21,11 +22,12 @@ async def list_data_sources(db: AsyncSession = Depends(get_db), _: User = Depend
 
 
 @router.post("/", response_model=DataSourceResponse, status_code=201)
-async def create_data_source(data: DataSourceCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_data_source(data: DataSourceCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     ds = DataSource(**data.model_dump())
     db.add(ds)
     await db.flush()
     await db.refresh(ds)
+    await create_audit_log(db, user, "create", "data_source", ds.id, {"name": data.name})
     return ds
 
 
@@ -39,7 +41,7 @@ async def get_data_source(ds_id: str, db: AsyncSession = Depends(get_db), _: Use
 
 
 @router.patch("/{ds_id}", response_model=DataSourceResponse)
-async def update_data_source(ds_id: str, data: DataSourceUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def update_data_source(ds_id: str, data: DataSourceUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(DataSource).where(DataSource.id == ds_id))
     ds = result.scalar_one_or_none()
     if not ds:
@@ -52,11 +54,12 @@ async def update_data_source(ds_id: str, data: DataSourceUpdate, db: AsyncSessio
 
 
 @router.delete("/{ds_id}", status_code=204)
-async def delete_data_source(ds_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_data_source(ds_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(DataSource).where(DataSource.id == ds_id))
     ds = result.scalar_one_or_none()
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
+    await create_audit_log(db, user, "delete", "data_source", ds_id)
     await db.delete(ds)
 
 
@@ -88,6 +91,6 @@ async def preview_data_source(ds_id: str, limit: int = 100, db: AsyncSession = D
 async def upload_csv_file(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(require_editor),
 ):
     return await upload_csv(db, file)

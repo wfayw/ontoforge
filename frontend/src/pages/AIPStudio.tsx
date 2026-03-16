@@ -1,13 +1,35 @@
-import { useEffect, useState, useRef } from 'react';
-import { Card, Button, Modal, Form, Input, Select, Space, Typography, message, Tabs, Tag, List, Empty, Slider, Popconfirm } from 'antd';
-import { PlusOutlined, SendOutlined, RobotOutlined, ThunderboltOutlined, DeleteOutlined, SearchOutlined, ToolOutlined, CheckCircleOutlined, EditOutlined } from '@ant-design/icons';
-import { aipApi, ontologyApi } from '@/services/api';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import {
+  Card, Button, Modal, Form, Input, Select, Space, Typography, message,
+  Tabs, Tag, List, Empty, Slider, Popconfirm, Spin, Drawer,
+} from 'antd';
+import {
+  PlusOutlined, SendOutlined, RobotOutlined, ThunderboltOutlined,
+  DeleteOutlined, SearchOutlined, ToolOutlined, CheckCircleOutlined,
+  EditOutlined, FileTextOutlined, UploadOutlined, PlayCircleOutlined,
+  LoadingOutlined,
+} from '@ant-design/icons';
+import { aipApi, documentApi, ontologyApi } from '@/services/api';
 import { useI18n } from '@/i18n';
 import PageHeader from '@/components/PageHeader';
-import type { LLMProvider, AIAgent, AIPFunction, Conversation, ChatMessage, ObjectType } from '@/types';
+import type { LLMProvider, AIAgent, AIPFunction, Conversation, ChatMessage, Document } from '@/types';
 
-const { Text } = Typography;
+const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
+
+interface ToolCallInfo {
+  tool: string;
+  args: Record<string, unknown>;
+  result?: unknown;
+  loading?: boolean;
+}
+
+interface StreamMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  toolCalls?: ToolCallInfo[];
+  streaming?: boolean;
+}
 
 export default function AIPStudio() {
   const { t } = useI18n();
@@ -15,44 +37,51 @@ export default function AIPStudio() {
   const [agents, setAgents] = useState<AIAgent[]>([]);
   const [functions, setFunctions] = useState<AIPFunction[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
+  const [documents, setDocuments] = useState<Document[]>([]);
 
   const [providerModalOpen, setProviderModalOpen] = useState(false);
   const [agentModalOpen, setAgentModalOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AIAgent | null>(null);
   const [functionModalOpen, setFunctionModalOpen] = useState(false);
+  const [docModalOpen, setDocModalOpen] = useState(false);
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | undefined>();
   const [conversationId, setConversationId] = useState<string | undefined>();
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [streamMessages, setStreamMessages] = useState<StreamMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
-  const [toolCallsMap, setToolCallsMap] = useState<Map<number, Array<{ tool: string; args: Record<string, unknown>; result: unknown }>>>(new Map());
 
   const [nlQuery, setNlQuery] = useState('');
   const [nlResult, setNlResult] = useState<{ interpreted_query: string; results: Record<string, unknown>[] } | null>(null);
   const [nlLoading, setNlLoading] = useState(false);
 
+  const [testingFn, setTestingFn] = useState<AIPFunction | null>(null);
+  const [fnInputs, setFnInputs] = useState<Record<string, string>>({});
+  const [fnResult, setFnResult] = useState<string | null>(null);
+  const [fnLoading, setFnLoading] = useState(false);
+
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const [providerForm] = Form.useForm();
   const [agentForm] = Form.useForm();
   const [functionForm] = Form.useForm();
+  const [docForm] = Form.useForm();
 
   const fetchAll = async () => {
-    const [p, a, f, c, ot] = await Promise.all([
+    const [p, a, f, c, d] = await Promise.all([
       aipApi.listProviders(), aipApi.listAgents(), aipApi.listFunctions(),
-      aipApi.listConversations(), ontologyApi.listObjectTypes(),
+      aipApi.listConversations(), documentApi.list(),
     ]);
     setProviders(p.data);
     setAgents(a.data);
     setFunctions(f.data);
     setConversations(c.data);
-    setObjectTypes(ot.data);
+    setDocuments(d.data);
   };
 
   useEffect(() => { fetchAll(); }, []);
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [streamMessages]);
 
   const createProvider = async (values: Record<string, unknown>) => {
     try {
@@ -111,45 +140,126 @@ export default function AIPStudio() {
     } catch { message.error(t('aip.operationFailed')); }
   };
 
-  const sendMessage = async () => {
-    if (!chatInput.trim()) return;
-    const userMsg: ChatMessage = { role: 'user', content: chatInput };
-    setChatMessages((prev) => [...prev, userMsg]);
+  const sendMessage = useCallback(async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const userMsg: StreamMessage = { role: 'user', content: chatInput };
+    setStreamMessages((prev) => [...prev, userMsg]);
+    const inputText = chatInput;
     setChatInput('');
     setChatLoading(true);
+
+    const assistantIdx = streamMessages.length + 1;
+    setStreamMessages((prev) => [...prev, { role: 'assistant', content: '', streaming: true, toolCalls: [] }]);
+
     try {
-      const { data } = await aipApi.chat({
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const response = await aipApi.chatStream({
         agent_id: selectedAgentId,
         conversation_id: conversationId,
-        message: chatInput,
+        message: inputText,
       });
-      setConversationId(data.conversation_id);
-      setChatMessages((prev) => {
-        const idx = prev.length;
-        if (data.tool_calls?.length) {
-          setToolCallsMap((m) => new Map(m).set(idx, data.tool_calls));
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.body) throw new Error('No response body');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+
+          try {
+            const data = JSON.parse(payload);
+            if (data.type === 'conversation_id') {
+              setConversationId(data.conversation_id);
+            } else if (data.type === 'content_delta') {
+              setStreamMessages((prev) => {
+                const updated = [...prev];
+                const msg = updated[assistantIdx];
+                if (msg) updated[assistantIdx] = { ...msg, content: msg.content + data.content };
+                return updated;
+              });
+            } else if (data.type === 'tool_start') {
+              setStreamMessages((prev) => {
+                const updated = [...prev];
+                const msg = updated[assistantIdx];
+                if (msg) {
+                  const tcs = [...(msg.toolCalls || []), { tool: data.tool, args: data.args, loading: true }];
+                  updated[assistantIdx] = { ...msg, toolCalls: tcs };
+                }
+                return updated;
+              });
+            } else if (data.type === 'tool_end') {
+              setStreamMessages((prev) => {
+                const updated = [...prev];
+                const msg = updated[assistantIdx];
+                if (msg) {
+                  const tcs = (msg.toolCalls || []).map((tc) =>
+                    tc.tool === data.tool && tc.loading ? { ...tc, result: data.result, loading: false } : tc
+                  );
+                  updated[assistantIdx] = { ...msg, toolCalls: tcs };
+                }
+                return updated;
+              });
+            } else if (data.type === 'done') {
+              setStreamMessages((prev) => {
+                const updated = [...prev];
+                const msg = updated[assistantIdx];
+                if (msg) updated[assistantIdx] = { ...msg, streaming: false };
+                return updated;
+              });
+            }
+          } catch { /* skip malformed JSON */ }
         }
-        return [...prev, data.message];
+      }
+
+      setStreamMessages((prev) => {
+        const updated = [...prev];
+        const msg = updated[assistantIdx];
+        if (msg?.streaming) updated[assistantIdx] = { ...msg, streaming: false };
+        return updated;
       });
+
       aipApi.listConversations().then(({ data: convs }) => setConversations(convs));
-    } catch {
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: t('aip.chatError') }]);
+    } catch (err) {
+      setStreamMessages((prev) => {
+        const updated = [...prev];
+        updated[assistantIdx] = { role: 'assistant', content: t('aip.chatError'), streaming: false };
+        return updated;
+      });
     } finally {
       setChatLoading(false);
+      abortRef.current = null;
     }
-  };
+  }, [chatInput, chatLoading, conversationId, selectedAgentId, streamMessages.length, t]);
 
   const loadConversation = async (conv: Conversation) => {
     setConversationId(conv.id);
     setSelectedAgentId(conv.agent_id || undefined);
-    setToolCallsMap(new Map());
-    setChatMessages(conv.messages.filter((m: ChatMessage) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls?.length)));
+    const msgs: StreamMessage[] = [];
+    for (const m of conv.messages) {
+      if (m.role === 'user') msgs.push({ role: 'user', content: m.content });
+      else if (m.role === 'assistant' && !m.tool_calls?.length) msgs.push({ role: 'assistant', content: m.content });
+    }
+    setStreamMessages(msgs);
   };
 
   const newConversation = () => {
     setConversationId(undefined);
-    setChatMessages([]);
-    setToolCallsMap(new Map());
+    setStreamMessages([]);
   };
 
   const executeNlQuery = async () => {
@@ -163,6 +273,57 @@ export default function AIPStudio() {
     } finally {
       setNlLoading(false);
     }
+  };
+
+  const uploadDocument = async (values: { name: string; content: string; description?: string }) => {
+    try {
+      await documentApi.create(values);
+      message.success(t('aip.docUploaded'));
+      setDocModalOpen(false);
+      docForm.resetFields();
+      fetchAll();
+    } catch { message.error(t('aip.operationFailed')); }
+  };
+
+  const openFnTest = (fn: AIPFunction) => {
+    setTestingFn(fn);
+    setFnResult(null);
+    setFnLoading(false);
+    const vars: Record<string, string> = {};
+    const matches = fn.prompt_template.match(/\{\{(\w+)\}\}/g);
+    if (matches) {
+      for (const m of matches) {
+        const key = m.replace(/\{|\}/g, '');
+        vars[key] = '';
+      }
+    }
+    setFnInputs(vars);
+  };
+
+  const executeFn = async () => {
+    if (!testingFn) return;
+    setFnLoading(true);
+    try {
+      const { data } = await aipApi.executeFunction(testingFn.id, fnInputs);
+      setFnResult(data.output || data.error || JSON.stringify(data));
+      message.success(t('aip.functionExecuted'));
+    } catch { message.error(t('aip.operationFailed')); }
+    finally { setFnLoading(false); }
+  };
+
+  const fnPreviewPrompt = () => {
+    if (!testingFn) return '';
+    let prompt = testingFn.prompt_template;
+    for (const [k, v] of Object.entries(fnInputs)) {
+      prompt = prompt.split(`{{${k}}}`).join(v || `[${k}]`);
+    }
+    return prompt;
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   return (
@@ -213,18 +374,18 @@ export default function AIPStudio() {
 
               <Card style={{ flex: 1, background: 'var(--bg-surface)', border: '1px solid var(--card-border)', display: 'flex', flexDirection: 'column' }} styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' } }}>
                 <div style={{ flex: 1, overflow: 'auto', padding: '8px 0' }}>
-                  {chatMessages.length === 0 && (
+                  {streamMessages.length === 0 && (
                     <div style={{ textAlign: 'center', padding: '80px 0', color: 'var(--text-tertiary)' }}>
                       <RobotOutlined style={{ fontSize: 48, marginBottom: 16, display: 'block' }} />
                       <Text style={{ color: 'var(--text-tertiary)', whiteSpace: 'pre-line' }}>{t('aip.chatEmptyText')}</Text>
                     </div>
                   )}
-                  {chatMessages.map((m, i) => (
+                  {streamMessages.map((m, i) => (
                     <div key={i}>
-                      {toolCallsMap.get(i) && (
+                      {m.toolCalls && m.toolCalls.length > 0 && (
                         <div style={{ margin: '4px 0 8px', display: 'flex', justifyContent: 'flex-start' }}>
                           <div style={{ maxWidth: '80%', width: '100%' }}>
-                            {toolCallsMap.get(i)!.map((tc, ti) => (
+                            {m.toolCalls.map((tc, ti) => (
                               <div key={ti} style={{
                                 background: 'var(--bg-elevated)', border: '1px solid var(--border)',
                                 borderRadius: 8, padding: '8px 12px', marginBottom: 4, fontSize: 12,
@@ -232,7 +393,10 @@ export default function AIPStudio() {
                                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
                                   <ToolOutlined style={{ color: 'var(--color-purple)', fontSize: 13 }} />
                                   <Text strong style={{ color: 'var(--color-purple)', fontSize: 12 }}>{tc.tool}</Text>
-                                  <CheckCircleOutlined style={{ color: 'var(--color-green)', fontSize: 11, marginLeft: 'auto' }} />
+                                  {tc.loading
+                                    ? <LoadingOutlined style={{ color: 'var(--primary)', fontSize: 11, marginLeft: 'auto' }} spin />
+                                    : <CheckCircleOutlined style={{ color: 'var(--color-green)', fontSize: 11, marginLeft: 'auto' }} />
+                                  }
                                 </div>
                                 {tc.args && Object.keys(tc.args).length > 0 && (
                                   <div style={{ color: 'var(--text-tertiary)', fontSize: 11, marginBottom: 2 }}>
@@ -263,6 +427,12 @@ export default function AIPStudio() {
                           fontSize: 14, lineHeight: 1.6, whiteSpace: 'pre-wrap',
                         }}>
                           {m.content}
+                          {m.streaming && !m.content && (
+                            <span style={{ color: 'var(--text-tertiary)' }}>{t('aip.thinking')}</span>
+                          )}
+                          {m.streaming && m.content && (
+                            <span className="streaming-cursor" style={{ display: 'inline-block', width: 2, height: 16, background: 'var(--primary)', marginLeft: 2, animation: 'blink 1s infinite' }} />
+                          )}
                         </div>
                       </div>
                     </div>
@@ -282,6 +452,45 @@ export default function AIPStudio() {
                 </div>
               </Card>
             </div>
+          ),
+        },
+        {
+          key: 'documents',
+          label: <><FileTextOutlined /> {t('aip.documents')}</>,
+          children: (
+            <Card style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}>
+              <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between' }}>
+                <Text style={{ color: 'var(--text-secondary)' }}>
+                  {documents.length > 0 ? `${documents.length} ${t('aip.documents').toLowerCase()}` : ''}
+                </Text>
+                <Button icon={<UploadOutlined />} type="primary" onClick={() => setDocModalOpen(true)}>{t('aip.uploadDocument')}</Button>
+              </div>
+              <List
+                dataSource={documents}
+                renderItem={(doc) => (
+                  <List.Item
+                    actions={[
+                      <Popconfirm title={t('aip.deleteConfirm')} onConfirm={async () => { await documentApi.delete(doc.id); message.success(t('aip.docDeleted')); fetchAll(); }}>
+                        <Button size="small" danger icon={<DeleteOutlined />} />
+                      </Popconfirm>,
+                    ]}
+                  >
+                    <List.Item.Meta
+                      avatar={<FileTextOutlined style={{ fontSize: 24, color: 'var(--primary)' }} />}
+                      title={<Text style={{ color: 'var(--text-primary)' }}>{doc.name}</Text>}
+                      description={
+                        <Space>
+                          {doc.description && <Text style={{ color: 'var(--text-secondary)' }}>{doc.description}</Text>}
+                          <Tag>{t('aip.chunks')}: {doc.chunk_count}</Tag>
+                          <Tag>{t('aip.fileSize')}: {formatBytes(doc.file_size)}</Tag>
+                        </Space>
+                      }
+                    />
+                  </List.Item>
+                )}
+                locale={{ emptyText: <Empty description={t('aip.noDocuments')} /> }}
+              />
+            </Card>
           ),
         },
         {
@@ -374,7 +583,9 @@ export default function AIPStudio() {
               <List
                 dataSource={functions}
                 renderItem={(fn) => (
-                  <List.Item actions={[<Button size="small">{t('common.execute')}</Button>]}>
+                  <List.Item actions={[
+                    <Button size="small" icon={<PlayCircleOutlined />} onClick={() => openFnTest(fn)}>{t('aip.testFunction')}</Button>,
+                  ]}>
                     <List.Item.Meta
                       avatar={<ThunderboltOutlined style={{ fontSize: 24, color: 'var(--color-yellow)' }} />}
                       title={<Text style={{ color: 'var(--text-primary)' }}>{fn.display_name}</Text>}
@@ -415,6 +626,7 @@ export default function AIPStudio() {
         },
       ]} />
 
+      {/* Provider Modal */}
       <Modal title={t('aip.addProvider')} open={providerModalOpen} onCancel={() => setProviderModalOpen(false)} onOk={() => providerForm.submit()} okText={t('common.add')}>
         <Form form={providerForm} onFinish={createProvider} layout="vertical">
           <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}><Input placeholder="e.g. OpenAI Production" /></Form.Item>
@@ -427,6 +639,7 @@ export default function AIPStudio() {
         </Form>
       </Modal>
 
+      {/* Agent Modal */}
       <Modal
         title={editingAgent ? t('aip.editAgent') : t('aip.createAgent')}
         open={agentModalOpen}
@@ -454,6 +667,7 @@ export default function AIPStudio() {
               { value: 'action_execute', label: t('aip.toolActionExecute') },
               { value: 'analytics', label: t('aip.toolAnalytics') },
               { value: 'instance_write', label: t('aip.toolInstanceWrite') },
+              { value: 'document_search', label: t('aip.toolDocumentSearch') },
             ]} />
           </Form.Item>
           {editingAgent && (
@@ -464,6 +678,7 @@ export default function AIPStudio() {
         </Form>
       </Modal>
 
+      {/* Function Modal */}
       <Modal title={t('aip.createFunction')} open={functionModalOpen} onCancel={() => setFunctionModalOpen(false)} onOk={() => functionForm.submit()} okText={t('common.create')} width={600}>
         <Form form={functionForm} onFinish={createFunction} layout="vertical">
           <Form.Item name="name" label={t('aip.apiNameLabel')} rules={[{ required: true }]}><Input /></Form.Item>
@@ -477,6 +692,68 @@ export default function AIPStudio() {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* Document Upload Modal */}
+      <Modal title={t('aip.uploadDocument')} open={docModalOpen} onCancel={() => setDocModalOpen(false)} onOk={() => docForm.submit()} okText={t('common.create')} width={600}>
+        <Form form={docForm} onFinish={uploadDocument} layout="vertical">
+          <Form.Item name="name" label={t('aip.docName')} rules={[{ required: true }]}><Input placeholder="e.g. Maintenance Manual v3.2" /></Form.Item>
+          <Form.Item name="description" label={t('aip.docDescription')}><Input /></Form.Item>
+          <Form.Item name="content" label={t('aip.docContent')} rules={[{ required: true }]}>
+            <TextArea rows={10} placeholder="Paste document content here..." />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* Function Test Drawer */}
+      <Drawer
+        title={t('aip.functionTestPanel')}
+        open={!!testingFn}
+        onClose={() => setTestingFn(null)}
+        width={560}
+      >
+        {testingFn && (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <div>
+              <Text strong style={{ fontSize: 16 }}>{testingFn.display_name}</Text>
+              <br />
+              <Text style={{ color: 'var(--text-secondary)' }}>{testingFn.description}</Text>
+            </div>
+
+            {Object.keys(fnInputs).length > 0 && (
+              <Card size="small" title={t('aip.inputVariables')}>
+                {Object.entries(fnInputs).map(([key, val]) => (
+                  <div key={key} style={{ marginBottom: 8 }}>
+                    <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{`{{${key}}}`}</Text>
+                    <Input
+                      value={val}
+                      onChange={(e) => setFnInputs((prev) => ({ ...prev, [key]: e.target.value }))}
+                      placeholder={key}
+                    />
+                  </div>
+                ))}
+              </Card>
+            )}
+
+            <Card size="small" title={t('aip.previewPrompt')}>
+              <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 0 }}>
+                {fnPreviewPrompt()}
+              </Paragraph>
+            </Card>
+
+            <Button type="primary" icon={<PlayCircleOutlined />} onClick={executeFn} loading={fnLoading} block>
+              {fnLoading ? t('aip.executingFunction') : t('common.execute')}
+            </Button>
+
+            {fnResult && (
+              <Card size="small" title={t('aip.executeResult')}>
+                <Paragraph style={{ whiteSpace: 'pre-wrap', fontSize: 13, marginBottom: 0 }}>
+                  {fnResult}
+                </Paragraph>
+              </Card>
+            )}
+          </Space>
+        )}
+      </Drawer>
     </div>
   );
 }

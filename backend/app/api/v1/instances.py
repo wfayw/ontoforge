@@ -13,7 +13,8 @@ from app.schemas.instance import (
     ObjectInstanceCreate, ObjectInstanceUpdate, ObjectInstanceResponse,
     LinkInstanceCreate, LinkInstanceResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, require_editor
+from app.services.audit_service import create_audit_log
 from app.services.action_executor import execute_action, ActionError
 from app.services.analytics_service import aggregate
 
@@ -57,7 +58,7 @@ async def list_objects(
 
 
 @router.post("/objects", response_model=ObjectInstanceResponse, status_code=201)
-async def create_object(data: ObjectInstanceCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_object(data: ObjectInstanceCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     type_check = await db.execute(select(ObjectType).where(ObjectType.id == data.object_type_id))
     if not type_check.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Object type not found")
@@ -66,6 +67,7 @@ async def create_object(data: ObjectInstanceCreate, db: AsyncSession = Depends(g
     db.add(obj)
     await db.flush()
     await db.refresh(obj)
+    await create_audit_log(db, user, "create", "object_instance", obj.id, {"type_id": data.object_type_id})
     return obj
 
 
@@ -126,20 +128,22 @@ async def list_links(
 
 
 @router.post("/links", response_model=LinkInstanceResponse, status_code=201)
-async def create_link(data: LinkInstanceCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_link(data: LinkInstanceCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     link = LinkInstance(**data.model_dump())
     db.add(link)
     await db.flush()
     await db.refresh(link)
+    await create_audit_log(db, user, "create", "link_instance", link.id)
     return link
 
 
 @router.delete("/links/{link_id}", status_code=204)
-async def delete_link(link_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_link(link_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(LinkInstance).where(LinkInstance.id == link_id))
     link = result.scalar_one_or_none()
     if not link:
         raise HTTPException(status_code=404, detail="Link not found")
+    await create_audit_log(db, user, "delete", "link_instance", link_id)
     await db.delete(link)
 
 
@@ -193,10 +197,11 @@ class ActionExecuteRequest(BaseModel):
 async def execute_action_endpoint(
     data: ActionExecuteRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(require_editor),
 ):
     try:
         result = await execute_action(db, data.action_type_id, data.params, dry_run=data.dry_run)
+        await create_audit_log(db, user, "execute", "action", data.action_type_id, {"params": data.params, "dry_run": data.dry_run})
         return result
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))

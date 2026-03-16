@@ -15,3 +15,4 @@ cryptography==44.0.0
 aiofiles==24.1.0
 openai==1.58.1
 apscheduler==3.10.4
+aiosqlite==0.22.1

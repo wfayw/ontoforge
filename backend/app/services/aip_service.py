@@ -2,7 +2,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Optional
+from typing import Optional, AsyncIterator
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,9 +11,10 @@ from app.models.aip import AIAgent, AIPFunction, Conversation, LLMProvider
 from app.models.ontology import ObjectType, PropertyDefinition, ActionType, LinkType
 from app.models.instance import ObjectInstance, LinkInstance
 from app.schemas.aip import ChatRequest, ChatResponse, ChatMessage, NLQueryRequest, NLQueryResponse
-from app.services.llm_provider import get_llm_client, chat_completion
+from app.services.llm_provider import get_llm_client, chat_completion, chat_completion_stream
 from app.services.action_executor import execute_action, ActionError
 from app.services.analytics_service import aggregate
+from app.services.rag_service import search_documents
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -146,6 +147,21 @@ ONTOLOGY_TOOLS = [
                     "depth": {"type": "integer", "description": "Traversal depth (1-3)", "default": 1},
                 },
                 "required": ["object_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "document_search",
+            "description": "Search uploaded documents (knowledge base) for relevant content. Returns matching text chunks ranked by relevance. Use this to answer questions about uploaded documents, manuals, reports, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search query (keywords or natural language)"},
+                    "limit": {"type": "integer", "description": "Max results to return", "default": 5},
+                },
+                "required": ["query"],
             },
         },
     },
@@ -291,6 +307,12 @@ async def _execute_tool(db: AsyncSession, name: str, args: dict) -> str:
         await traverse(obj_id, 1)
         return json.dumps({"neighbors": neighbors, "edges": edges})
 
+    elif name == "document_search":
+        query_text = args.get("query", "")
+        limit = args.get("limit", 5)
+        results = await search_documents(db, query=query_text, limit=limit)
+        return json.dumps(results)
+
     return json.dumps({"error": f"Unknown tool: {name}"})
 
 
@@ -299,6 +321,7 @@ _TOOL_CATEGORY_MAP = {
     "action_execute": ["list_actions", "execute_action"],
     "analytics": ["aggregate_objects"],
     "instance_write": ["update_object", "create_object"],
+    "document_search": ["document_search"],
 }
 
 _TOOL_BY_NAME = {t["function"]["name"]: t for t in ONTOLOGY_TOOLS}
@@ -535,3 +558,106 @@ async def execute_aip_function(db: AsyncSession, fn: AIPFunction, inputs: dict) 
         return {"output": result["content"]}
     except Exception as e:
         return {"error": str(e)}
+
+
+async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncIterator[dict]:
+    """Streaming version of process_chat — yields SSE-compatible dicts."""
+    system_prompt = "You are OntoForge AI assistant. You help users query and manage their ontology data."
+    provider_id = None
+    model_name = None
+    temperature = 0.7
+    tools = ONTOLOGY_TOOLS
+
+    if data.agent_id:
+        agent_result = await db.execute(select(AIAgent).where(AIAgent.id == data.agent_id))
+        agent = agent_result.scalar_one_or_none()
+        if agent:
+            system_prompt = agent.system_prompt
+            provider_id = str(agent.llm_provider_id) if agent.llm_provider_id else None
+            model_name = agent.model_name
+            temperature = agent.temperature
+            tools = _resolve_agent_tools(agent.tools)
+
+    conv: Optional[Conversation] = None
+    if data.conversation_id:
+        conv_result = await db.execute(select(Conversation).where(Conversation.id == data.conversation_id))
+        conv = conv_result.scalar_one_or_none()
+
+    if not conv:
+        conv = Conversation(agent_id=data.agent_id, title=data.message[:100], messages=[])
+        db.add(conv)
+        await db.flush()
+
+    yield {"type": "conversation_id", "conversation_id": conv.id}
+
+    raw_history = conv.messages[-MAX_HISTORY_MESSAGES:] if len(conv.messages) > MAX_HISTORY_MESSAGES else conv.messages
+    history = _sanitize_history(raw_history)
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": data.message})
+
+    client, default_model = await get_llm_client(db, provider_id)
+    model = model_name or default_model
+
+    turn_messages: list[dict] = [{"role": "user", "content": data.message}]
+    tool_calls_result: list[dict] = []
+
+    MAX_TOOL_ROUNDS = 5
+    round_num = 0
+
+    while round_num < MAX_TOOL_ROUNDS:
+        round_num += 1
+        content_buf = ""
+        finish_tool_calls = None
+
+        try:
+            async for delta in chat_completion_stream(client, model, messages, tools=tools, temperature=temperature):
+                if delta["type"] == "content_delta":
+                    content_buf += delta["content"]
+                    yield {"type": "content_delta", "content": delta["content"]}
+                elif delta["type"] == "finish":
+                    finish_tool_calls = delta.get("tool_calls")
+        except Exception as e:
+            logger.error("Streaming LLM call %d failed: %s", round_num, e)
+            error_msg = f"LLM call failed: {e}"
+            yield {"type": "content_delta", "content": error_msg}
+            content_buf = error_msg
+            finish_tool_calls = None
+
+        if finish_tool_calls and any(tc.get("name") for tc in finish_tool_calls):
+            assistant_msg: dict = {"role": "assistant", "content": content_buf or ""}
+            assistant_msg["tool_calls"] = [
+                {"id": tc["id"], "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                for tc in finish_tool_calls if tc.get("name")
+            ]
+            turn_messages.append(assistant_msg)
+            messages.append(assistant_msg)
+
+            for tc in assistant_msg["tool_calls"]:
+                fn_name = tc["function"]["name"]
+                try:
+                    fn_args = json.loads(tc["function"]["arguments"])
+                except json.JSONDecodeError:
+                    fn_args = {}
+
+                yield {"type": "tool_start", "tool": fn_name, "args": fn_args}
+
+                tool_result = await _execute_tool(db, fn_name, fn_args)
+                tool_parsed = json.loads(tool_result)
+                tool_calls_result.append({"tool": fn_name, "args": fn_args, "result": tool_parsed})
+
+                yield {"type": "tool_end", "tool": fn_name, "result": tool_parsed}
+
+                tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": tool_result}
+                messages.append(tool_msg)
+                turn_messages.append(tool_msg)
+        else:
+            assistant_msg_final = {"role": "assistant", "content": content_buf}
+            turn_messages.append(assistant_msg_final)
+            break
+
+    conv.messages = [*conv.messages, *turn_messages]
+    await db.flush()
+    await db.refresh(conv)
+
+    yield {"type": "done", "tool_calls": tool_calls_result}

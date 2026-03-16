@@ -1,4 +1,7 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,8 +15,9 @@ from app.schemas.aip import (
     ChatRequest, ChatResponse, ConversationResponse,
     NLQueryRequest, NLQueryResponse,
 )
-from app.services.auth_service import get_current_user
-from app.services.aip_service import process_chat, process_nl_query, execute_aip_function
+from app.services.auth_service import get_current_user, require_editor
+from app.services.audit_service import create_audit_log
+from app.services.aip_service import process_chat, process_chat_stream, process_nl_query, execute_aip_function
 
 router = APIRouter()
 
@@ -27,7 +31,7 @@ async def list_providers(db: AsyncSession = Depends(get_db), _: User = Depends(g
 
 
 @router.post("/providers", response_model=LLMProviderResponse, status_code=201)
-async def create_provider(data: LLMProviderCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_provider(data: LLMProviderCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     provider = LLMProvider(
         name=data.name,
         provider_type=data.provider_type,
@@ -38,15 +42,17 @@ async def create_provider(data: LLMProviderCreate, db: AsyncSession = Depends(ge
     db.add(provider)
     await db.flush()
     await db.refresh(provider)
+    await create_audit_log(db, user, "create_provider", "llm_provider", provider.id, {"name": provider.name})
     return provider
 
 
 @router.delete("/providers/{provider_id}", status_code=204)
-async def delete_provider(provider_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_provider(provider_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Provider not found")
+    await create_audit_log(db, user, "delete_provider", "llm_provider", provider_id, {"name": p.name})
     await db.delete(p)
 
 
@@ -59,11 +65,12 @@ async def list_agents(db: AsyncSession = Depends(get_db), _: User = Depends(get_
 
 
 @router.post("/agents", response_model=AIAgentResponse, status_code=201)
-async def create_agent(data: AIAgentCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_agent(data: AIAgentCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     agent = AIAgent(**data.model_dump())
     db.add(agent)
     await db.flush()
     await db.refresh(agent)
+    await create_audit_log(db, user, "create_agent", "ai_agent", agent.id, {"name": agent.name})
     return agent
 
 
@@ -77,7 +84,7 @@ async def get_agent(agent_id: str, db: AsyncSession = Depends(get_db), _: User =
 
 
 @router.patch("/agents/{agent_id}", response_model=AIAgentResponse)
-async def update_agent(agent_id: str, data: AIAgentUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def update_agent(agent_id: str, data: AIAgentUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(AIAgent).where(AIAgent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
@@ -90,11 +97,12 @@ async def update_agent(agent_id: str, data: AIAgentUpdate, db: AsyncSession = De
 
 
 @router.delete("/agents/{agent_id}", status_code=204)
-async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(AIAgent).where(AIAgent.id == agent_id))
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+    await create_audit_log(db, user, "delete_agent", "ai_agent", agent_id, {"name": agent.name})
     await db.delete(agent)
 
 
@@ -107,11 +115,12 @@ async def list_functions(db: AsyncSession = Depends(get_db), _: User = Depends(g
 
 
 @router.post("/functions", response_model=AIPFunctionResponse, status_code=201)
-async def create_function(data: AIPFunctionCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_function(data: AIPFunctionCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     fn = AIPFunction(**data.model_dump())
     db.add(fn)
     await db.flush()
     await db.refresh(fn)
+    await create_audit_log(db, user, "create_function", "aip_function", fn.id, {"name": fn.name})
     return fn
 
 
@@ -129,6 +138,15 @@ async def run_function(func_id: str, inputs: dict, db: AsyncSession = Depends(ge
 @router.post("/chat", response_model=ChatResponse)
 async def chat(data: ChatRequest, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     return await process_chat(db, data)
+
+
+@router.post("/chat/stream")
+async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+    async def generate():
+        async for chunk in process_chat_stream(db, data):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.get("/conversations", response_model=list[ConversationResponse])

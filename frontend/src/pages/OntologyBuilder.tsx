@@ -1,15 +1,59 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, memo } from 'react';
 import { Card, Button, Modal, Form, Input, Select, Table, Tag, Space, Typography, message, Popconfirm, ColorPicker, Switch, InputNumber, Tabs, Empty } from 'antd';
 import { PlusOutlined, DeleteOutlined, ApartmentOutlined, LinkOutlined, DatabaseOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, MarkerType, type Node, type Edge } from '@xyflow/react';
+import { ReactFlow, Background, Controls, MiniMap, useNodesState, useEdgesState, MarkerType, Handle, Position, type NodeProps, type Node as FlowNode, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ontologyApi } from '@/services/api';
 import { useOntologyStore } from '@/stores/ontologyStore';
 import { useI18n } from '@/i18n';
+import { usePermission } from '@/hooks/usePermission';
 import PageHeader from '@/components/PageHeader';
 import type { ObjectType, LinkType, PropertyDefinition, ActionType } from '@/types';
 
 const { Text } = Typography;
+
+interface SchemaNodeData {
+  color: string;
+  name: string;
+  displayName: string;
+  propertyCount: number;
+  propertyNames: string[];
+  [key: string]: unknown;
+}
+
+const SchemaNode = memo(function SchemaNode({ data }: NodeProps<FlowNode<SchemaNodeData>>) {
+  const d = data as SchemaNodeData;
+  const [hovered, setHovered] = useState(false);
+  const first3 = d.propertyNames.slice(0, 3);
+  return (
+    <div
+      className="graph-node"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ position: 'relative', borderColor: d.color }}
+    >
+      <Handle type="target" position={Position.Top} style={{ opacity: 0, width: 8, height: 8 }} />
+      <Handle type="target" position={Position.Left} style={{ opacity: 0, width: 8, height: 8 }} id="tl" />
+      <div className="node-color-bar" style={{ background: d.color }} />
+      <div className="node-content">
+        <div style={{ fontSize: 9, color: d.color, fontWeight: 600, letterSpacing: '0.02em' }}>{d.name}</div>
+        <div className="node-title">{d.displayName}</div>
+        <div className="node-subtitle">{d.propertyCount} {d.propertyLabel as string}</div>
+        {hovered && first3.length > 0 && (
+          <div className="node-props">
+            {first3.map((p, i) => (
+              <div key={`${p}-${i}`} className="node-prop-item">{p}</div>
+            ))}
+          </div>
+        )}
+      </div>
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 8, height: 8 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0, width: 8, height: 8 }} id="sr" />
+    </div>
+  );
+});
+
+const NODE_TYPES = { schemaNode: SchemaNode };
 
 const DATA_TYPES = ['string', 'integer', 'float', 'boolean', 'datetime', 'json'];
 const CARDINALITIES = [
@@ -21,6 +65,7 @@ const CARDINALITIES = [
 export default function OntologyBuilder() {
   const { objectTypes, linkTypes, fetchAll, loading } = useOntologyStore();
   const { t } = useI18n();
+  const { canWrite } = usePermission();
   const [typeModalOpen, setTypeModalOpen] = useState(false);
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [propModalOpen, setPropModalOpen] = useState(false);
@@ -31,7 +76,7 @@ export default function OntologyBuilder() {
   const [linkForm] = Form.useForm();
   const [propForm] = Form.useForm();
   const [actionForm] = Form.useForm();
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
 
   const fetchActionTypes = useCallback(async () => {
@@ -101,43 +146,20 @@ export default function OntologyBuilder() {
       for (const n of simNodes) positions.set(n.id, { x: n.x, y: n.y });
     }
 
-    const typeNodes: Node[] = objectTypes.map((ot) => {
+    const typeNodes: FlowNode[] = objectTypes.map((ot) => {
       const pos = positions.get(ot.id) || { x: 0, y: 0 };
       return {
         id: ot.id,
+        type: 'schemaNode',
         position: pos,
         data: {
-          label: (
-            <div style={{ textAlign: 'center' }}>
-              <div style={{
-                fontSize: 9, lineHeight: '14px', color: ot.color, fontWeight: 600,
-                letterSpacing: '0.02em', marginBottom: 2,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>
-                {ot.name}
-              </div>
-              <div style={{
-                fontSize: 13, fontWeight: 700, color: 'var(--text-primary)', lineHeight: '16px',
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-              }}>
-                {ot.display_name}
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--text-tertiary)', marginTop: 3 }}>
-                {ot.properties.length} {t('ontology.properties')}
-              </div>
-            </div>
-          ),
-        },
-        style: {
-          background: 'var(--bg-surface)',
-          border: `2px solid ${ot.color}`,
-          borderRadius: 10,
-          padding: '8px 14px',
-          minWidth: 100,
-          maxWidth: 200,
-          boxShadow: `0 0 0 2px ${ot.color}22, 0 1px 4px rgba(0,0,0,0.08)`,
-          cursor: 'pointer',
-        },
+          color: ot.color,
+          name: ot.name,
+          displayName: ot.display_name,
+          propertyCount: ot.properties.length,
+          propertyNames: ot.properties.map((p) => p.display_name || p.name),
+          propertyLabel: t('ontology.properties'),
+        } satisfies SchemaNodeData,
       };
     });
 
@@ -247,12 +269,13 @@ export default function OntologyBuilder() {
       <PageHeader
         title={t('ontology.title')}
         subtitle={t('ontology.subtitle')}
-        actions={
+        actions={canWrite ?
           <Space>
             <Button icon={<PlusOutlined />} onClick={() => setTypeModalOpen(true)}>{t('ontology.objectType')}</Button>
             <Button icon={<LinkOutlined />} onClick={() => setLinkModalOpen(true)}>{t('ontology.linkType')}</Button>
             <Button icon={<ThunderboltOutlined />} onClick={() => setActionModalOpen(true)}>{t('ontology.actionType')}</Button>
           </Space>
+          : undefined
         }
       />
 
@@ -285,6 +308,7 @@ export default function OntologyBuilder() {
               <ReactFlow
                 nodes={nodes} edges={edges}
                 onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+                nodeTypes={NODE_TYPES}
                 fitView
                 defaultEdgeOptions={{ type: 'smoothstep' }}
                 proOptions={{ hideAttribution: true }}

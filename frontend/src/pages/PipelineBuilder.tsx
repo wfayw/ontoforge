@@ -3,6 +3,7 @@ import { Card, Button, Modal, Form, Input, Select, Table, Tag, Space, Typography
 import { PlusOutlined, UploadOutlined, PlayCircleOutlined, DeleteOutlined, CloudServerOutlined, ApiOutlined, FileTextOutlined, ClockCircleOutlined, BellOutlined } from '@ant-design/icons';
 import { dataSourceApi, pipelineApi, ontologyApi, alertApi } from '@/services/api';
 import { useI18n } from '@/i18n';
+import { usePermission } from '@/hooks/usePermission';
 import PageHeader from '@/components/PageHeader';
 import type { DataSource, Pipeline, PipelineRun, ObjectType, DataPreview } from '@/types';
 
@@ -10,6 +11,7 @@ const { Text } = Typography;
 
 export default function PipelineBuilder() {
   const { t } = useI18n();
+  const { canWrite } = usePermission();
   const [dataSources, setDataSources] = useState<DataSource[]>([]);
   const [pipelines, setPipelines] = useState<Pipeline[]>([]);
   const [objectTypes, setObjectTypes] = useState<ObjectType[]>([]);
@@ -241,7 +243,7 @@ export default function PipelineBuilder() {
       <PageHeader
         title={t('pipeline.title')}
         subtitle={t('pipeline.subtitle')}
-        actions={
+        actions={canWrite ?
           <Space>
             <Upload beforeUpload={handleCsvUpload} showUploadList={false} accept=".csv">
               <Button icon={<UploadOutlined />}>{t('pipeline.uploadCsv')}</Button>
@@ -249,6 +251,7 @@ export default function PipelineBuilder() {
             <Button icon={<PlusOutlined />} onClick={() => setDsModalOpen(true)}>{t('pipeline.dataSource')}</Button>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setPlModalOpen(true)}>{t('pipeline.pipeline')}</Button>
           </Space>
+          : undefined
         }
       />
 

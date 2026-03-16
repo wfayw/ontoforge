@@ -9,7 +9,8 @@ from app.schemas.data_integration import (
     PipelineCreate, PipelineUpdate, PipelineResponse, PipelineRunResponse,
     ScheduleRequest,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, require_editor
+from app.services.audit_service import create_audit_log
 from app.services.pipeline_executor import execute_pipeline
 from app.services import scheduler as sched
 
@@ -23,11 +24,12 @@ async def list_pipelines(db: AsyncSession = Depends(get_db), _: User = Depends(g
 
 
 @router.post("/", response_model=PipelineResponse, status_code=201)
-async def create_pipeline(data: PipelineCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_pipeline(data: PipelineCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     pipeline = Pipeline(**data.model_dump())
     db.add(pipeline)
     await db.flush()
     await db.refresh(pipeline)
+    await create_audit_log(db, user, "create", "pipeline", pipeline.id, {"name": data.name})
     return pipeline
 
 
@@ -50,7 +52,7 @@ async def get_pipeline(pipeline_id: str, db: AsyncSession = Depends(get_db), _: 
 
 
 @router.patch("/{pipeline_id}", response_model=PipelineResponse)
-async def update_pipeline(pipeline_id: str, data: PipelineUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def update_pipeline(pipeline_id: str, data: PipelineUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
     p = result.scalar_one_or_none()
     if not p:
@@ -63,22 +65,24 @@ async def update_pipeline(pipeline_id: str, data: PipelineUpdate, db: AsyncSessi
 
 
 @router.delete("/{pipeline_id}", status_code=204)
-async def delete_pipeline(pipeline_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_pipeline(pipeline_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Pipeline not found")
+    await create_audit_log(db, user, "delete", "pipeline", pipeline_id)
     sched.remove_pipeline(pipeline_id)
     await db.delete(p)
 
 
 @router.post("/{pipeline_id}/run", response_model=PipelineRunResponse)
-async def run_pipeline(pipeline_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def run_pipeline(pipeline_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Pipeline not found")
     run = await execute_pipeline(db, p)
+    await create_audit_log(db, user, "run", "pipeline", pipeline_id)
     return run
 
 
@@ -95,7 +99,7 @@ async def set_schedule(
     pipeline_id: str,
     body: ScheduleRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(require_editor),
 ):
     result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
     p = result.scalar_one_or_none()
@@ -121,7 +125,7 @@ async def set_schedule(
 async def remove_schedule(
     pipeline_id: str,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(require_editor),
 ):
     result = await db.execute(select(Pipeline).where(Pipeline.id == pipeline_id))
     p = result.scalar_one_or_none()

@@ -7,6 +7,7 @@ import {
   SearchOutlined,
   ApiOutlined,
   RobotOutlined,
+  AppstoreOutlined,
   SettingOutlined,
   LogoutOutlined,
   UserOutlined,
@@ -26,6 +27,7 @@ const menuIconMap: Record<string, React.ReactNode> = {
   '/ontology': <ApartmentOutlined />,
   '/explorer': <SearchOutlined />,
   '/pipelines': <ApiOutlined />,
+  '/workshop': <AppstoreOutlined />,
   '/aip': <RobotOutlined />,
   '/settings': <SettingOutlined />,
 };
@@ -71,7 +73,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     setAlertDrawerOpen(true);
     try {
       const { data } = await alertApi.list({ page_size: 50 });
-      setAlerts(data);
+      setAlerts(data.items ?? data);
     } catch { /* ignore */ }
   };
 
@@ -86,6 +88,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     { key: '/ontology', icon: menuIconMap['/ontology'], label: t('menu.ontologyBuilder') },
     { key: '/explorer', icon: menuIconMap['/explorer'], label: t('menu.objectExplorer') },
     { key: '/pipelines', icon: menuIconMap['/pipelines'], label: t('menu.pipelineBuilder') },
+    { key: '/workshop', icon: menuIconMap['/workshop'], label: t('menu.workshop') },
     { key: '/aip', icon: menuIconMap['/aip'], label: t('menu.aipStudio') },
     { key: '/settings', icon: menuIconMap['/settings'], label: t('menu.settings') },
   ];
@@ -195,6 +198,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                 {(user?.display_name || user?.username || 'U')[0].toUpperCase()}
               </Avatar>
               <Text style={{ color: 'var(--text-primary)', fontSize: 13 }}>{user?.display_name || user?.username}</Text>
+              <Tag color={user?.role === 'admin' ? 'red' : user?.role === 'editor' ? 'blue' : 'green'} style={{ fontSize: 11, lineHeight: '18px', marginLeft: -4 }}>{user?.role}</Tag>
             </Space>
           </Dropdown>
         </Header>

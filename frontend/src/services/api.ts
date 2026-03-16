@@ -20,19 +20,34 @@ api.interceptors.response.use(
       localStorage.removeItem('token');
       window.location.href = '/login';
     }
+    if (error.response?.status === 403) {
+      import('antd').then(({ message }) => message.warning('权限不足 / Insufficient permissions'));
+    }
     return Promise.reject(error);
   }
 );
 
 export default api;
 
-// Auth
+// Auth & User Management
 export const authApi = {
   register: (data: { username: string; email: string; password: string }) =>
     api.post('/auth/register', data),
   login: (data: { username: string; password: string }) =>
     api.post('/auth/login', data),
   me: () => api.get('/auth/me'),
+  listUsers: () => api.get('/auth/users'),
+  updateUserRole: (userId: string, role: string) => api.patch(`/auth/users/${userId}/role`, { role }),
+  updateUser: (userId: string, data: { display_name?: string; is_active?: boolean }) =>
+    api.patch(`/auth/users/${userId}`, data),
+};
+
+// Audit
+export const auditApi = {
+  listLogs: (params?: { page?: number; page_size?: number; action?: string; resource_type?: string; username?: string }) =>
+    api.get('/audit/logs', { params }),
+  listActions: () => api.get('/audit/actions'),
+  listResourceTypes: () => api.get('/audit/resource-types'),
 };
 
 // Ontology
@@ -115,6 +130,23 @@ export const alertApi = {
   markAllRead: () => api.post('/alerts/mark-all-read'),
 };
 
+// Workshop
+export const workshopApi = {
+  listApps: () => api.get('/workshop/apps'),
+  createApp: (data: { name: string; description?: string; icon?: string }) => api.post('/workshop/apps', data),
+  getApp: (id: string) => api.get(`/workshop/apps/${id}`),
+  updateApp: (id: string, data: unknown) => api.patch(`/workshop/apps/${id}`, data),
+  deleteApp: (id: string) => api.delete(`/workshop/apps/${id}`),
+  publishApp: (id: string) => api.post(`/workshop/apps/${id}/publish`),
+  listWidgets: (appId: string) => api.get(`/workshop/apps/${appId}/widgets`),
+  createWidget: (appId: string, data: unknown) => api.post(`/workshop/apps/${appId}/widgets`, data),
+  updateWidget: (widgetId: string, data: unknown) => api.patch(`/workshop/widgets/${widgetId}`, data),
+  deleteWidget: (widgetId: string) => api.delete(`/workshop/widgets/${widgetId}`),
+  updateLayout: (appId: string, items: Array<{ id: string; position: unknown }>) => api.put(`/workshop/apps/${appId}/layout`, items),
+  resolve: (widgets: Array<{ id: string; widget_type: string; data_binding: unknown }>, variables?: Record<string, unknown>) =>
+    api.post('/workshop/resolve', { widgets, variables }),
+};
+
 // AIP
 export const aipApi = {
   listProviders: () => api.get('/aip/providers'),
@@ -129,7 +161,27 @@ export const aipApi = {
   createFunction: (data: unknown) => api.post('/aip/functions', data),
   executeFunction: (id: string, inputs: Record<string, unknown>) => api.post(`/aip/functions/${id}/execute`, inputs),
   chat: (data: { agent_id?: string; conversation_id?: string; message: string }) => api.post('/aip/chat', data),
+  chatStream: (data: { agent_id?: string; conversation_id?: string; message: string }) => {
+    const token = localStorage.getItem('token');
+    return fetch('/api/v1/aip/chat/stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(data),
+    });
+  },
   listConversations: () => api.get('/aip/conversations'),
   getConversation: (id: string) => api.get(`/aip/conversations/${id}`),
   nlQuery: (data: { query: string; object_type_id?: string }) => api.post('/aip/nl-query', data),
+};
+
+// Documents (RAG)
+export const documentApi = {
+  list: () => api.get('/documents/'),
+  create: (data: { name: string; content: string; description?: string }) => api.post('/documents/', data),
+  get: (id: string) => api.get(`/documents/${id}`),
+  delete: (id: string) => api.delete(`/documents/${id}`),
+  search: (data: { query: string; limit?: number }) => api.post('/documents/search', data),
 };

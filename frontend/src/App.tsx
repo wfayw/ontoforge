@@ -9,6 +9,9 @@ import OntologyBuilder from '@/pages/OntologyBuilder';
 import ObjectExplorer from '@/pages/ObjectExplorer';
 import PipelineBuilder from '@/pages/PipelineBuilder';
 import AIPStudio from '@/pages/AIPStudio';
+import Workshop from '@/pages/Workshop';
+import WorkshopBuilder from '@/pages/WorkshopBuilder';
+import WorkshopView from '@/pages/WorkshopView';
 import SettingsPage from '@/pages/Settings';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -38,6 +41,9 @@ export default function App() {
                 <Route path="/ontology" element={<OntologyBuilder />} />
                 <Route path="/explorer" element={<ObjectExplorer />} />
                 <Route path="/pipelines" element={<PipelineBuilder />} />
+                <Route path="/workshop" element={<Workshop />} />
+                <Route path="/workshop/:id" element={<WorkshopView />} />
+                <Route path="/workshop/:id/edit" element={<WorkshopBuilder />} />
                 <Route path="/aip" element={<AIPStudio />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>

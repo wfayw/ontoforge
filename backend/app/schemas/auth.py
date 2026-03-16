@@ -27,6 +27,15 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserUpdateRole(BaseModel):
+    role: str
+
+
+class UserUpdate(BaseModel):
+    display_name: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

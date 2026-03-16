@@ -12,7 +12,8 @@ from app.schemas.ontology import (
     LinkTypeCreate, LinkTypeResponse,
     ActionTypeCreate, ActionTypeResponse,
 )
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, require_editor
+from app.services.audit_service import create_audit_log
 from app.services.action_executor import execute_action, ActionError
 
 router = APIRouter()
@@ -27,7 +28,7 @@ async def list_object_types(db: AsyncSession = Depends(get_db), _: User = Depend
 
 
 @router.post("/object-types", response_model=ObjectTypeResponse, status_code=201)
-async def create_object_type(data: ObjectTypeCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_object_type(data: ObjectTypeCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     obj_type = ObjectType(
         name=data.name,
         display_name=data.display_name,
@@ -43,6 +44,7 @@ async def create_object_type(data: ObjectTypeCreate, db: AsyncSession = Depends(
         db.add(PropertyDefinition(object_type_id=obj_type.id, **prop.model_dump()))
     await db.flush()
     await db.refresh(obj_type)
+    await create_audit_log(db, user, "create", "object_type", obj_type.id, {"name": data.name})
     return obj_type
 
 
@@ -56,7 +58,7 @@ async def get_object_type(type_id: str, db: AsyncSession = Depends(get_db), _: U
 
 
 @router.patch("/object-types/{type_id}", response_model=ObjectTypeResponse)
-async def update_object_type(type_id: str, data: ObjectTypeUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def update_object_type(type_id: str, data: ObjectTypeUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(ObjectType).where(ObjectType.id == type_id))
     obj_type = result.scalar_one_or_none()
     if not obj_type:
@@ -69,18 +71,19 @@ async def update_object_type(type_id: str, data: ObjectTypeUpdate, db: AsyncSess
 
 
 @router.delete("/object-types/{type_id}", status_code=204)
-async def delete_object_type(type_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_object_type(type_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(ObjectType).where(ObjectType.id == type_id))
     obj_type = result.scalar_one_or_none()
     if not obj_type:
         raise HTTPException(status_code=404, detail="Object type not found")
+    await create_audit_log(db, user, "delete", "object_type", type_id)
     await db.delete(obj_type)
 
 
 # ── Properties ────────────────────────────────────────────────
 
 @router.post("/object-types/{type_id}/properties", response_model=PropertyDefinitionResponse, status_code=201)
-async def add_property(type_id: str, data: PropertyDefinitionCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def add_property(type_id: str, data: PropertyDefinitionCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(ObjectType).where(ObjectType.id == type_id))
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Object type not found")
@@ -92,7 +95,7 @@ async def add_property(type_id: str, data: PropertyDefinitionCreate, db: AsyncSe
 
 
 @router.delete("/properties/{prop_id}", status_code=204)
-async def delete_property(prop_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_property(prop_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     await db.execute(delete(PropertyDefinition).where(PropertyDefinition.id == prop_id))
 
 
@@ -105,20 +108,22 @@ async def list_link_types(db: AsyncSession = Depends(get_db), _: User = Depends(
 
 
 @router.post("/link-types", response_model=LinkTypeResponse, status_code=201)
-async def create_link_type(data: LinkTypeCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_link_type(data: LinkTypeCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     link_type = LinkType(**data.model_dump())
     db.add(link_type)
     await db.flush()
     await db.refresh(link_type)
+    await create_audit_log(db, user, "create", "link_type", link_type.id, {"name": data.name})
     return link_type
 
 
 @router.delete("/link-types/{link_type_id}", status_code=204)
-async def delete_link_type(link_type_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_link_type(link_type_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(LinkType).where(LinkType.id == link_type_id))
     lt = result.scalar_one_or_none()
     if not lt:
         raise HTTPException(status_code=404, detail="Link type not found")
+    await create_audit_log(db, user, "delete", "link_type", link_type_id)
     await db.delete(lt)
 
 
@@ -131,20 +136,22 @@ async def list_action_types(db: AsyncSession = Depends(get_db), _: User = Depend
 
 
 @router.post("/action-types", response_model=ActionTypeResponse, status_code=201)
-async def create_action_type(data: ActionTypeCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_action_type(data: ActionTypeCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     action = ActionType(**data.model_dump())
     db.add(action)
     await db.flush()
     await db.refresh(action)
+    await create_audit_log(db, user, "create", "action_type", action.id, {"name": data.name})
     return action
 
 
 @router.delete("/action-types/{action_id}", status_code=204)
-async def delete_action_type(action_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_action_type(action_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(ActionType).where(ActionType.id == action_id))
     action = result.scalar_one_or_none()
     if not action:
         raise HTTPException(status_code=404, detail="Action type not found")
+    await create_audit_log(db, user, "delete", "action_type", action_id)
     await db.delete(action)
 
 
@@ -157,10 +164,11 @@ async def execute_action_by_id(
     action_id: str,
     data: ActionExecuteBody,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(require_editor),
 ):
     try:
         result = await execute_action(db, action_id, data.params)
+        await create_audit_log(db, user, "execute", "action_type", action_id, {"params": data.params})
         return result
     except ActionError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -171,7 +179,7 @@ async def validate_action_by_id(
     action_id: str,
     data: ActionExecuteBody,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    user: User = Depends(require_editor),
 ):
     try:
         result = await execute_action(db, action_id, data.params, dry_run=True)

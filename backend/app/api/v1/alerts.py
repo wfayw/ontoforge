@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.user import User
 from app.models.alert import AlertRule, Alert
-from app.services.auth_service import get_current_user
+from app.services.auth_service import get_current_user, require_editor
+from app.services.audit_service import create_audit_log
 
 router = APIRouter()
 
@@ -55,24 +56,33 @@ async def list_rules(db: AsyncSession = Depends(get_db), _: User = Depends(get_c
 
 
 @router.post("/rules", response_model=AlertRuleResponse, status_code=201)
-async def create_rule(data: AlertRuleCreate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_rule(data: AlertRuleCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     rule = AlertRule(**data.model_dump())
     db.add(rule)
     await db.flush()
     await db.refresh(rule)
+    await create_audit_log(db, user, "create_rule", "alert_rule", rule.id, {"name": rule.name})
     return rule
 
 
 @router.delete("/rules/{rule_id}", status_code=204)
-async def delete_rule(rule_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_rule(rule_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(AlertRule).where(AlertRule.id == rule_id))
     rule = result.scalar_one_or_none()
     if not rule:
         raise HTTPException(status_code=404, detail="Rule not found")
+    await create_audit_log(db, user, "delete_rule", "alert_rule", rule_id, {"name": rule.name})
     await db.delete(rule)
 
 
-@router.get("/", response_model=list[AlertResponse])
+class AlertListResponse(BaseModel):
+    items: list[AlertResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+@router.get("/", response_model=AlertListResponse)
 async def list_alerts(
     severity: Optional[str] = None,
     is_read: Optional[bool] = None,
@@ -81,14 +91,18 @@ async def list_alerts(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    stmt = select(Alert).order_by(Alert.created_at.desc())
+    base = select(Alert)
     if severity:
-        stmt = stmt.where(Alert.severity == severity)
+        base = base.where(Alert.severity == severity)
     if is_read is not None:
-        stmt = stmt.where(Alert.is_read == is_read)
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        base = base.where(Alert.is_read == is_read)
+
+    total_result = await db.execute(select(func.count()).select_from(base.subquery()))
+    total = total_result.scalar() or 0
+
+    stmt = base.order_by(Alert.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(stmt)
-    return result.scalars().all()
+    return AlertListResponse(items=result.scalars().all(), total=total, page=page, page_size=page_size)
 
 
 @router.get("/count")

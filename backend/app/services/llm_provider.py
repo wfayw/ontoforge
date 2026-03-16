@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, AsyncIterator
 import json
 
 from openai import AsyncOpenAI
@@ -73,3 +73,56 @@ async def chat_completion(
             for tc in choice.message.tool_calls
         ]
     return result
+
+
+async def chat_completion_stream(
+    client: AsyncOpenAI,
+    model: str,
+    messages: list[dict],
+    tools: Optional[list[dict]] = None,
+    temperature: float = 0.7,
+) -> AsyncIterator[dict]:
+    """Streaming chat completion — yields delta dicts.
+
+    Each yielded dict has one of:
+      {"type": "content_delta", "content": "..."}
+      {"type": "tool_call_delta", "index": N, "id": "...", "name": "...", "arguments_delta": "..."}
+      {"type": "finish", "finish_reason": "..."}
+    """
+    kwargs: dict = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+
+    stream = await client.chat.completions.create(**kwargs)
+
+    tc_buffers: dict[int, dict] = {}
+
+    async for chunk in stream:
+        delta = chunk.choices[0].delta if chunk.choices else None
+        finish_reason = chunk.choices[0].finish_reason if chunk.choices else None
+
+        if delta and delta.content:
+            yield {"type": "content_delta", "content": delta.content}
+
+        if delta and delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in tc_buffers:
+                    tc_buffers[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc_delta.id:
+                    tc_buffers[idx]["id"] = tc_delta.id
+                if tc_delta.function:
+                    if tc_delta.function.name:
+                        tc_buffers[idx]["name"] = tc_delta.function.name
+                    if tc_delta.function.arguments:
+                        tc_buffers[idx]["arguments"] += tc_delta.function.arguments
+
+        if finish_reason:
+            yield {"type": "finish", "finish_reason": finish_reason, "tool_calls": list(tc_buffers.values()) if tc_buffers else None}
+            break
