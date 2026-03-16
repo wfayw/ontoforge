@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -30,6 +30,24 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)):
+    return current_user
+
+
+@router.post("/bootstrap", response_model=UserResponse)
+async def bootstrap_admin(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """若系统中尚无 admin 角色，则将当前用户提升为 admin。用于演示/首次部署。"""
+    has_admin = await db.scalar(
+        select(func.count()).select_from(User).where(User.role == ROLE_ADMIN)
+    )
+    if has_admin and has_admin > 0:
+        return current_user
+    current_user.role = ROLE_ADMIN
+    await db.flush()
+    await db.refresh(current_user)
+    await create_audit_log(db, current_user, "bootstrap_admin", "user", str(current_user.id), {})
     return current_user
 
 

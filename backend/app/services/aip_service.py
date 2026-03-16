@@ -7,6 +7,7 @@ from typing import Optional, AsyncIterator
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.database import async_session
 from app.models.aip import AIAgent, AIPFunction, Conversation, LLMProvider
 from app.models.ontology import ObjectType, PropertyDefinition, ActionType, LinkType
 from app.models.instance import ObjectInstance, LinkInstance
@@ -578,19 +579,30 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
             temperature = agent.temperature
             tools = _resolve_agent_tools(agent.tools)
 
+    conv_id: str
+    messages_so_far: list
     conv: Optional[Conversation] = None
     if data.conversation_id:
         conv_result = await db.execute(select(Conversation).where(Conversation.id == data.conversation_id))
         conv = conv_result.scalar_one_or_none()
+        if conv:
+            conv_id = conv.id
+            messages_so_far = list(conv.messages)
+        else:
+            conv_id = data.conversation_id
+            messages_so_far = []
+    else:
+        # 使用独立短会话创建 conversation，避免长时间占用连接导致 SQLite database is locked
+        async with async_session() as sess:
+            new_conv = Conversation(agent_id=data.agent_id, title=data.message[:100], messages=[])
+            sess.add(new_conv)
+            await sess.commit()
+            conv_id = new_conv.id
+        messages_so_far = []
 
-    if not conv:
-        conv = Conversation(agent_id=data.agent_id, title=data.message[:100], messages=[])
-        db.add(conv)
-        await db.flush()
+    yield {"type": "conversation_id", "conversation_id": conv_id}
 
-    yield {"type": "conversation_id", "conversation_id": conv.id}
-
-    raw_history = conv.messages[-MAX_HISTORY_MESSAGES:] if len(conv.messages) > MAX_HISTORY_MESSAGES else conv.messages
+    raw_history = messages_so_far[-MAX_HISTORY_MESSAGES:] if len(messages_so_far) > MAX_HISTORY_MESSAGES else messages_so_far
     history = _sanitize_history(raw_history)
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
@@ -656,8 +668,13 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
             turn_messages.append(assistant_msg_final)
             break
 
-    conv.messages = [*conv.messages, *turn_messages]
-    await db.flush()
-    await db.refresh(conv)
+    # 使用独立短会话更新 conversation，避免请求级 session 长时间持锁导致 SQLite database is locked
+    final_messages = [*messages_so_far, *turn_messages]
+    async with async_session() as sess:
+        result = await sess.execute(select(Conversation).where(Conversation.id == conv_id))
+        conv_to_update = result.scalar_one_or_none()
+        if conv_to_update:
+            conv_to_update.messages = final_messages
+            await sess.commit()
 
     yield {"type": "done", "tool_calls": tool_calls_result}

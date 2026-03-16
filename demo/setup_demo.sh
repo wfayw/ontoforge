@@ -32,10 +32,25 @@ TOKEN=$(curl -sf -X POST "$BASE/auth/login" \
 AUTH="Authorization: Bearer $TOKEN"
 echo "    admin Token: ${TOKEN:0:20}..."
 
+# 若系统中尚无 admin，将当前用户提升为 admin（解决历史数据中 role=user 等情况）
+curl -sf -X POST "$BASE/auth/bootstrap" -H "$AUTH" >/dev/null 2>&1 || true
+
+# 确保 admin 为管理员、editor 为编辑者（需 admin 权限才能 list users，故先 bootstrap 后再修正角色）
+ADMIN_UID=$(curl -sf "$BASE/auth/users" -H "$AUTH" | python3 -c "
+import sys,json
+for u in json.load(sys.stdin):
+    if u.get('username')=='admin': print(u['id']); break
+" 2>/dev/null || true)
+if [ -n "$ADMIN_UID" ]; then
+  curl -sf -X PATCH "$BASE/auth/users/$ADMIN_UID/role" \
+    -H "$AUTH" -H "Content-Type: application/json" \
+    -d '{"role":"admin"}' >/dev/null 2>&1 || true
+fi
+
 EDITOR_UID=$(curl -sf "$BASE/auth/users" -H "$AUTH" | python3 -c "
 import sys,json
 for u in json.load(sys.stdin):
-    if u['username']=='editor': print(u['id']); break
+    if u.get('username')=='editor': print(u['id']); break
 " 2>/dev/null || true)
 if [ -n "$EDITOR_UID" ]; then
   curl -sf -X PATCH "$BASE/auth/users/$EDITOR_UID/role" \
