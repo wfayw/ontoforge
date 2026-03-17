@@ -592,7 +592,6 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
             conv_id = data.conversation_id
             messages_so_far = []
     else:
-        # 使用独立短会话创建 conversation，避免长时间占用连接导致 SQLite database is locked
         async with async_session() as sess:
             new_conv = Conversation(agent_id=data.agent_id, title=data.message[:100], messages=[])
             sess.add(new_conv)
@@ -668,7 +667,6 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
             turn_messages.append(assistant_msg_final)
             break
 
-    # 使用独立短会话更新 conversation，避免请求级 session 长时间持锁导致 SQLite database is locked
     final_messages = [*messages_so_far, *turn_messages]
     async with async_session() as sess:
         result = await sess.execute(select(Conversation).where(Conversation.id == conv_id))

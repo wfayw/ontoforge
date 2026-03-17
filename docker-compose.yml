@@ -29,6 +29,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://ontoforge:ontoforge@postgres:5432/ontoforge
       REDIS_URL: redis://redis:6379/0
+      CSV_STORAGE_DIR: /app/csv_uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,11 +37,14 @@ services:
         condition: service_started
     volumes:
       - ./backend:/app
+      - csv_uploads:/app/csv_uploads
 
   frontend:
     build: ./frontend
     ports:
       - "5173:5173"
+    environment:
+      VITE_API_TARGET: http://backend:8000
     depends_on:
       - backend
     volumes:
@@ -50,3 +54,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  csv_uploads:

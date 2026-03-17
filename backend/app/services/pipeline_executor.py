@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pandas as pd
 from sqlalchemy import select
@@ -63,7 +63,7 @@ def _resolve_display_name(props: dict, fallback_idx: int) -> str:
 
 async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
     """Execute a pipeline: fetch data, transform, and load into ontology objects."""
-    run = PipelineRun(pipeline_id=pipeline.id, status="running", started_at=datetime.now(timezone.utc))
+    run = PipelineRun(pipeline_id=pipeline.id, status="running", started_at=datetime.utcnow())
     db.add(run)
     await db.flush()
 
@@ -151,7 +151,7 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
         run.rows_updated = rows_updated
         run.rows_skipped = rows_skipped
         run.rows_failed = rows_err
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.utcnow()
         pipeline.status = "active"
 
         if new_object_ids:
@@ -164,7 +164,7 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
     except Exception as e:
         run.status = "failed"
         run.error_log = str(e)
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.utcnow()
         pipeline.status = "error"
 
     await db.flush()

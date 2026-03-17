@@ -1,5 +1,7 @@
 import io
+import os
 import csv as csv_module
+from pathlib import Path
 from typing import Tuple
 
 import pandas as pd
@@ -10,14 +12,34 @@ from app.models.data_integration import DataSource
 from app.schemas.data_integration import DataPreview
 
 _CSV_STORAGE: dict[str, pd.DataFrame] = {}
+_CSV_DIR = Path(os.environ.get("CSV_STORAGE_DIR", "/app/csv_uploads"))
+_CSV_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _load_csv_from_disk(ds_id: str) -> pd.DataFrame | None:
+    """Load CSV from disk cache if available."""
+    path = _CSV_DIR / f"{ds_id}.csv"
+    if path.exists():
+        df = pd.read_csv(path)
+        _CSV_STORAGE[ds_id] = df
+        return df
+    return None
+
+
+def _get_csv(ds_id: str) -> pd.DataFrame | None:
+    """Get CSV data: try memory first, then disk."""
+    df = _CSV_STORAGE.get(ds_id)
+    if df is not None:
+        return df
+    return _load_csv_from_disk(ds_id)
 
 
 async def test_connection(ds: DataSource) -> Tuple[bool, str]:
     """Test connectivity to the data source."""
     try:
         if ds.source_type == "csv":
-            if str(ds.id) in _CSV_STORAGE:
-                return True, "CSV data loaded in memory"
+            if _get_csv(str(ds.id)) is not None:
+                return True, "CSV data available"
             return False, "CSV data not loaded. Please upload a file."
 
         elif ds.source_type == "postgres":
@@ -51,7 +73,7 @@ async def test_connection(ds: DataSource) -> Tuple[bool, str]:
 async def preview_data(ds: DataSource, limit: int = 100) -> DataPreview:
     """Preview rows from the data source."""
     if ds.source_type == "csv":
-        df = _CSV_STORAGE.get(str(ds.id))
+        df = _get_csv(str(ds.id))
         if df is None:
             return DataPreview(columns=[], rows=[], total_count=0)
         preview_df = df.head(limit)
@@ -109,7 +131,7 @@ async def preview_data(ds: DataSource, limit: int = 100) -> DataPreview:
 async def fetch_source_data(ds: DataSource) -> pd.DataFrame:
     """Fetch all data from the source as a DataFrame."""
     if ds.source_type == "csv":
-        df = _CSV_STORAGE.get(str(ds.id))
+        df = _get_csv(str(ds.id))
         return df if df is not None else pd.DataFrame()
 
     elif ds.source_type == "postgres":
@@ -166,5 +188,7 @@ async def upload_csv(db: AsyncSession, file: UploadFile) -> DataSource:
     await db.flush()
     await db.refresh(ds)
 
-    _CSV_STORAGE[str(ds.id)] = df
+    ds_id = str(ds.id)
+    _CSV_STORAGE[ds_id] = df
+    df.to_csv(_CSV_DIR / f"{ds_id}.csv", index=False)
     return ds

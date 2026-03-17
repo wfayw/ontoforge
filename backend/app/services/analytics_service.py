@@ -3,9 +3,10 @@
 import logging
 from typing import Any, Optional
 
-from sqlalchemy import select, func, cast, Float, String, case
+from sqlalchemy import select, func, cast, Float, String, case, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.models.ontology import ObjectType
 from app.models.instance import ObjectInstance
 
@@ -13,9 +14,13 @@ logger = logging.getLogger("uvicorn.error")
 
 _SUPPORTED_FUNCS = {"count", "sum", "avg", "min", "max", "count_distinct"}
 
+_is_pg = "postgresql" in get_settings().DATABASE_URL
+
 
 def _json_extract(prop_name: str):
-    """SQLite JSON extraction — returns text."""
+    """Cross-DB JSON text extraction (PostgreSQL ->> / SQLite json_extract)."""
+    if _is_pg:
+        return ObjectInstance.properties[prop_name].as_string()
     return func.json_extract(ObjectInstance.properties, f"$.{prop_name}")
 
 
@@ -65,10 +70,12 @@ async def aggregate(
 
     if time_granularity and time_granularity in _TIME_GRANULARITY_FMT:
         fmt = _TIME_GRANULARITY_FMT[time_granularity]
-        if date_property:
-            time_col = func.strftime(fmt, _json_extract(date_property))
+        raw_col = _json_extract(date_property) if date_property else ObjectInstance.created_at
+        if _is_pg:
+            pg_fmt_map = {"%Y-%m-%d": "YYYY-MM-DD", "%Y-W%W": "YYYY-\"W\"IW", "%Y-%m": "YYYY-MM"}
+            time_col = func.to_char(cast(raw_col, String), pg_fmt_map.get(fmt, "YYYY-MM-DD"))
         else:
-            time_col = func.strftime(fmt, ObjectInstance.created_at)
+            time_col = func.strftime(fmt, raw_col)
         stmt = (
             select(time_col.label("period"), agg_col.label("value"))
             .where(ObjectInstance.object_type_id == object_type_id)
