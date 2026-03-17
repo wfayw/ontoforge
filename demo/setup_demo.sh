@@ -2,7 +2,7 @@
 # OntoForge Demo — 供应链管理场景 自动化部署脚本
 # 7 种实体类型 · 335+ 对象 · 8 种关联 · 6 种操作 · 2 个 Workshop 应用
 set -e
-BASE="http://localhost:8000/api/v1"
+BASE="${ONTOFORGE_API:-http://localhost:8000/api/v1}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "============================================="
