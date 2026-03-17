@@ -18,6 +18,7 @@ from app.schemas.aip import (
 from app.services.auth_service import get_current_user, require_editor
 from app.services.audit_service import create_audit_log
 from app.services.aip_service import process_chat, process_chat_stream, process_nl_query, execute_aip_function
+from app.services.security import encrypt_secret
 
 router = APIRouter()
 
@@ -36,7 +37,7 @@ async def create_provider(data: LLMProviderCreate, db: AsyncSession = Depends(ge
         name=data.name,
         provider_type=data.provider_type,
         base_url=data.base_url,
-        api_key_encrypted=data.api_key or "",
+        api_key_encrypted=encrypt_secret(data.api_key or ""),
         default_model=data.default_model,
     )
     db.add(provider)
@@ -64,7 +65,7 @@ async def update_provider(provider_id: str, data: LLMProviderUpdate, db: AsyncSe
         raise HTTPException(status_code=404, detail="Provider not found")
     for field, value in data.model_dump(exclude_unset=True).items():
         if field == "api_key":
-            p.api_key_encrypted = value or ""
+            p.api_key_encrypted = encrypt_secret(value or "")
         else:
             setattr(p, field, value)
     await db.flush()
@@ -175,28 +176,37 @@ async def delete_function(func_id: str, db: AsyncSession = Depends(get_db), user
 # ── Chat & Conversations ─────────────────────────────────────
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(data: ChatRequest, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    return await process_chat(db, data)
+async def chat(data: ChatRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    return await process_chat(db, data, user)
 
 
 @router.post("/chat/stream")
-async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def chat_stream(data: ChatRequest, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
     async def generate():
-        async for chunk in process_chat_stream(db, data):
+        async for chunk in process_chat_stream(db, data, user):
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.get("/conversations", response_model=list[ConversationResponse])
-async def list_conversations(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    result = await db.execute(select(Conversation).order_by(Conversation.updated_at.desc()))
+async def list_conversations(db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == user.id)
+        .order_by(Conversation.updated_at.desc())
+    )
     return result.scalars().all()
 
 
 @router.get("/conversations/{conv_id}", response_model=ConversationResponse)
-async def get_conversation(conv_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    result = await db.execute(select(Conversation).where(Conversation.id == conv_id))
+async def get_conversation(conv_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(get_current_user)):
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == conv_id,
+            Conversation.user_id == user.id,
+        )
+    )
     conv = result.scalar_one_or_none()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")

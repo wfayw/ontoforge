@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.models.aip import LLMProvider
+from app.services.security import decrypt_secret
 
 settings = get_settings()
 
@@ -23,7 +24,7 @@ async def get_llm_client(db: AsyncSession, provider_id: Optional[str] = None) ->
         provider = result.scalar_one_or_none()
         if provider:
             client = AsyncOpenAI(
-                api_key=provider.api_key_encrypted or "sk-placeholder",
+                api_key=decrypt_secret(provider.api_key_encrypted or "") or "sk-placeholder",
                 base_url=provider.base_url,
                 timeout=timeout,
             )

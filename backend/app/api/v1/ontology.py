@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -200,7 +200,7 @@ async def update_action_type(action_id: str, data: ActionTypeUpdate, db: AsyncSe
 
 
 class ActionExecuteBody(BaseModel):
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
 
 
 @router.post("/action-types/{action_id}/execute")

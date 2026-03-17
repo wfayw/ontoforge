@@ -3,7 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -87,17 +87,17 @@ class ResolveRequest(BaseModel):
 
 @router.get("/apps", response_model=list[AppResponse])
 async def list_apps(db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
-    result = await db.execute(select(WorkshopApp).order_by(WorkshopApp.updated_at.desc()))
-    apps = result.scalars().all()
+    result = await db.execute(
+        select(WorkshopApp, func.count(WorkshopWidget.id))
+        .outerjoin(WorkshopWidget, WorkshopWidget.app_id == WorkshopApp.id)
+        .group_by(WorkshopApp.id)
+        .order_by(WorkshopApp.updated_at.desc())
+    )
 
-    response = []
-    for app in apps:
-        wc = await db.execute(
-            select(WorkshopWidget).where(WorkshopWidget.app_id == app.id)
-        )
-        count = len(wc.scalars().all())
+    response: list[AppResponse] = []
+    for app, count in result.all():
         r = AppResponse.model_validate(app)
-        r.widget_count = count
+        r.widget_count = int(count or 0)
         response.append(r)
     return response
 
@@ -120,9 +120,11 @@ async def get_app(app_id: str, db: AsyncSession = Depends(get_db), _: User = Dep
     app = result.scalar_one_or_none()
     if not app:
         raise HTTPException(status_code=404, detail="App not found")
-    wc = await db.execute(select(WorkshopWidget).where(WorkshopWidget.app_id == app.id))
+    wc = await db.scalar(
+        select(func.count(WorkshopWidget.id)).where(WorkshopWidget.app_id == app.id)
+    )
     r = AppResponse.model_validate(app)
-    r.widget_count = len(wc.scalars().all())
+    r.widget_count = int(wc or 0)
     return r
 
 
@@ -136,9 +138,11 @@ async def update_app(app_id: str, data: AppUpdate, db: AsyncSession = Depends(ge
         setattr(app, key, value)
     await db.flush()
     await db.refresh(app)
-    wc = await db.execute(select(WorkshopWidget).where(WorkshopWidget.app_id == app.id))
+    wc = await db.scalar(
+        select(func.count(WorkshopWidget.id)).where(WorkshopWidget.app_id == app.id)
+    )
     r = AppResponse.model_validate(app)
-    r.widget_count = len(wc.scalars().all())
+    r.widget_count = int(wc or 0)
     return r
 
 
@@ -162,9 +166,11 @@ async def publish_app(app_id: str, db: AsyncSession = Depends(get_db), user: Use
     await create_audit_log(db, user, "publish_app", "workshop_app", app_id, {"name": app.name, "is_published": app.is_published})
     await db.flush()
     await db.refresh(app)
-    wc = await db.execute(select(WorkshopWidget).where(WorkshopWidget.app_id == app.id))
+    wc = await db.scalar(
+        select(func.count(WorkshopWidget.id)).where(WorkshopWidget.app_id == app.id)
+    )
     r = AppResponse.model_validate(app)
-    r.widget_count = len(wc.scalars().all())
+    r.widget_count = int(wc or 0)
     return r
 
 

@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -27,7 +27,7 @@ class ObjectTypeCreate(BaseModel):
     icon: str = "cube"
     color: str = "#4A90D9"
     primary_key_property: Optional[str] = None
-    properties: list[PropertyDefinitionCreate] = []
+    properties: list[PropertyDefinitionCreate] = Field(default_factory=list)
 
 
 class ObjectTypeUpdate(BaseModel):
@@ -48,7 +48,7 @@ class ObjectTypeResponse(BaseModel):
     primary_key_property: Optional[str]
     created_at: datetime
     updated_at: datetime
-    properties: list[PropertyDefinitionResponse] = []
+    properties: list[PropertyDefinitionResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -80,10 +80,10 @@ class ActionTypeCreate(BaseModel):
     display_name: str
     description: Optional[str] = None
     object_type_id: Optional[str] = None
-    parameters: dict = {}
+    parameters: dict = Field(default_factory=dict)
     logic_type: str = "webhook"
-    logic_config: dict = {}
-    side_effects: list = []
+    logic_config: dict = Field(default_factory=dict)
+    side_effects: list = Field(default_factory=list)
 
 
 class ActionTypeResponse(BaseModel):
@@ -95,7 +95,7 @@ class ActionTypeResponse(BaseModel):
     parameters: dict
     logic_type: str
     logic_config: dict
-    side_effects: list = []
+    side_effects: list = Field(default_factory=list)
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -128,8 +128,8 @@ class FunctionDefCreate(BaseModel):
     name: str
     display_name: str
     description: Optional[str] = None
-    input_schema: dict = {}
-    output_schema: dict = {}
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
     implementation_type: str = "python"
     implementation: Optional[str] = None
 
@@ -157,7 +157,7 @@ class FunctionDefResponse(BaseModel):
 
 
 class FunctionExecuteRequest(BaseModel):
-    inputs: dict = {}
+    inputs: dict = Field(default_factory=dict)
 
 
 class OntologyGenerateRequest(BaseModel):

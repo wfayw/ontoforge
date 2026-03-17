@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -6,7 +6,7 @@ from typing import Optional
 class ObjectInstanceCreate(BaseModel):
     object_type_id: str
     display_name: Optional[str] = None
-    properties: dict = {}
+    properties: dict = Field(default_factory=dict)
 
 
 class ObjectInstanceUpdate(BaseModel):
@@ -32,7 +32,7 @@ class LinkInstanceCreate(BaseModel):
     link_type_id: str
     source_id: str
     target_id: str
-    properties: dict = {}
+    properties: dict = Field(default_factory=dict)
 
 
 class LinkInstanceResponse(BaseModel):

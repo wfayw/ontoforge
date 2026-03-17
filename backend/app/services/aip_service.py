@@ -1,7 +1,8 @@
 import json
 import logging
 import time
-import uuid
+from collections import defaultdict
+from json import JSONDecodeError
 from typing import Optional, AsyncIterator
 
 from sqlalchemy import select, func
@@ -9,14 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models.aip import AIAgent, AIPFunction, Conversation, LLMProvider
-from app.models.ontology import ObjectType, PropertyDefinition, ActionType, LinkType, FunctionDef
-from app.models.instance import ObjectInstance, LinkInstance
+from app.models.ontology import ObjectType, PropertyDefinition, ActionType, FunctionDef
+from app.models.instance import ObjectInstance
+from app.models.user import User
 from app.schemas.aip import ChatRequest, ChatResponse, ChatMessage, NLQueryRequest, NLQueryResponse
 from app.services.llm_provider import get_llm_client, chat_completion, chat_completion_stream
 from app.services.action_executor import execute_action, ActionError
 from app.services.analytics_service import aggregate
+from app.services.graph_service import fetch_neighbors_graph
 from app.services.rag_service import search_documents
 from app.services.function_executor import execute_function, FunctionError
+from app.services.auth_service import ROLE_ADMIN, ROLE_EDITOR
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -215,6 +219,18 @@ ONTOLOGY_TOOLS = [
     },
 ]
 
+WRITE_TOOLS = {"execute_action", "update_object", "create_object"}
+
+
+def _can_use_write_tools(user: User) -> bool:
+    return user.role in {ROLE_ADMIN, ROLE_EDITOR}
+
+
+def _filter_tools_for_user(tools: list[dict], user: User) -> list[dict]:
+    if _can_use_write_tools(user):
+        return tools
+    return [t for t in tools if t.get("function", {}).get("name") not in WRITE_TOOLS]
+
 
 async def _resolve_type_id(db: AsyncSession, type_name: str) -> Optional[str]:
     result = await db.execute(select(ObjectType).where(ObjectType.name == type_name))
@@ -222,8 +238,11 @@ async def _resolve_type_id(db: AsyncSession, type_name: str) -> Optional[str]:
     return obj_type.id if obj_type else None
 
 
-async def _execute_tool(db: AsyncSession, name: str, args: dict) -> str:
+async def _execute_tool(db: AsyncSession, name: str, args: dict, user: User) -> str:
     """Execute an ontology tool and return the result as a string."""
+    if name in WRITE_TOOLS and not _can_use_write_tools(user):
+        return json.dumps({"error": "Permission denied for write tool"})
+
     if name == "get_object_types":
         result = await db.execute(select(ObjectType))
         types = result.scalars().all()
@@ -329,31 +348,24 @@ async def _execute_tool(db: AsyncSession, name: str, args: dict) -> str:
     elif name == "get_neighbors":
         obj_id = args.get("object_id")
         depth = min(args.get("depth", 1), 3)
-        visited: set[str] = set()
-        neighbors = []
-        edges = []
-
-        async def traverse(current_id: str, d: int):
-            if d > depth or current_id in visited:
-                return
-            visited.add(current_id)
-            links = await db.execute(
-                select(LinkInstance).where(
-                    (LinkInstance.source_id == current_id) | (LinkInstance.target_id == current_id)
-                )
-            )
-            for link in links.scalars().all():
-                other_id = link.target_id if link.source_id == current_id else link.source_id
-                edges.append({"source_id": link.source_id, "target_id": link.target_id, "link_type_id": link.link_type_id})
-                if other_id not in visited:
-                    r = await db.execute(select(ObjectInstance).where(ObjectInstance.id == other_id))
-                    o = r.scalar_one_or_none()
-                    if o:
-                        neighbors.append({"id": str(o.id), "display_name": o.display_name, "properties": o.properties})
-                        await traverse(other_id, d + 1)
-
-        await traverse(obj_id, 1)
-        return json.dumps({"neighbors": neighbors, "edges": edges})
+        graph = await fetch_neighbors_graph(db, obj_id, depth=depth)
+        compact_neighbors = [
+            {
+                "id": n.get("id"),
+                "display_name": n.get("display_name"),
+                "properties": n.get("properties"),
+            }
+            for n in graph["neighbors"]
+        ]
+        compact_edges = [
+            {
+                "source_id": e.get("source_id"),
+                "target_id": e.get("target_id"),
+                "link_type_id": e.get("link_type_id"),
+            }
+            for e in graph["edges"]
+        ]
+        return json.dumps({"neighbors": compact_neighbors, "edges": compact_edges})
 
     elif name == "document_search":
         query_text = args.get("query", "")
@@ -426,14 +438,15 @@ _TOOL_CATEGORY_MAP = {
 _TOOL_BY_NAME = {t["function"]["name"]: t for t in ONTOLOGY_TOOLS}
 
 
-def _resolve_agent_tools(agent_tool_categories: list[str]) -> list[dict]:
+def _resolve_agent_tools(agent_tool_categories: list[str], user: User) -> list[dict]:
     """Map agent tool categories to actual OpenAI-compatible tool definitions."""
     if not agent_tool_categories:
         return []
     names: set[str] = set()
     for cat in agent_tool_categories:
         names.update(_TOOL_CATEGORY_MAP.get(cat, []))
-    return [_TOOL_BY_NAME[n] for n in names if n in _TOOL_BY_NAME]
+    tools = [_TOOL_BY_NAME[n] for n in names if n in _TOOL_BY_NAME]
+    return _filter_tools_for_user(tools, user)
 
 
 def _sanitize_history(messages: list[dict]) -> list[dict]:
@@ -476,13 +489,13 @@ def _sanitize_history(messages: list[dict]) -> list[dict]:
     return result
 
 
-async def process_chat(db: AsyncSession, data: ChatRequest) -> ChatResponse:
+async def process_chat(db: AsyncSession, data: ChatRequest, user: User) -> ChatResponse:
     """Process a chat message, optionally using an agent configuration."""
     system_prompt = "You are OntoForge AI assistant. You help users query and manage their ontology data."
     provider_id = None
     model_name = None
     temperature = 0.7
-    tools = ONTOLOGY_TOOLS
+    tools = _filter_tools_for_user(ONTOLOGY_TOOLS, user)
 
     if data.agent_id:
         agent_result = await db.execute(select(AIAgent).where(AIAgent.id == data.agent_id))
@@ -492,15 +505,20 @@ async def process_chat(db: AsyncSession, data: ChatRequest) -> ChatResponse:
             provider_id = str(agent.llm_provider_id) if agent.llm_provider_id else None
             model_name = agent.model_name
             temperature = agent.temperature
-            tools = _resolve_agent_tools(agent.tools)
+            tools = _resolve_agent_tools(agent.tools, user)
 
     conv: Optional[Conversation] = None
     if data.conversation_id:
-        conv_result = await db.execute(select(Conversation).where(Conversation.id == data.conversation_id))
+        conv_result = await db.execute(
+            select(Conversation).where(
+                Conversation.id == data.conversation_id,
+                Conversation.user_id == user.id,
+            )
+        )
         conv = conv_result.scalar_one_or_none()
 
     if not conv:
-        conv = Conversation(agent_id=data.agent_id, title=data.message[:100], messages=[])
+        conv = Conversation(agent_id=data.agent_id, user_id=user.id, title=data.message[:100], messages=[])
         db.add(conv)
         await db.flush()
 
@@ -534,9 +552,12 @@ async def process_chat(db: AsyncSession, data: ChatRequest) -> ChatResponse:
         messages.append(response)
         for tc in response["tool_calls"]:
             fn_name = tc["function"]["name"]
-            fn_args = json.loads(tc["function"]["arguments"])
+            try:
+                fn_args = json.loads(tc["function"]["arguments"])
+            except JSONDecodeError:
+                fn_args = {}
             t1 = time.monotonic()
-            tool_result = await _execute_tool(db, fn_name, fn_args)
+            tool_result = await _execute_tool(db, fn_name, fn_args, user)
             logger.info("Tool %s took %.2fs", fn_name, time.monotonic() - t1)
             tool_calls_result.append({"tool": fn_name, "args": fn_args, "result": json.loads(tool_result)})
             tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": tool_result}
@@ -578,14 +599,16 @@ async def process_nl_query(db: AsyncSession, data: NLQueryRequest) -> NLQueryRes
     """Convert natural language to ontology query and execute it."""
     types_result = await db.execute(select(ObjectType))
     all_types = types_result.scalars().all()
+    prop_result = await db.execute(
+        select(PropertyDefinition.object_type_id, PropertyDefinition.name)
+    )
+    prop_names_by_type: dict[str, list[str]] = defaultdict(list)
+    for object_type_id, prop_name in prop_result.all():
+        prop_names_by_type[object_type_id].append(prop_name)
 
     props_desc_parts = []
     for t in all_types:
-        prop_result = await db.execute(
-            select(PropertyDefinition).where(PropertyDefinition.object_type_id == t.id)
-        )
-        props = prop_result.scalars().all()
-        prop_names = ", ".join(p.name for p in props)
+        prop_names = ", ".join(prop_names_by_type.get(t.id, []))
         props_desc_parts.append(
             f"- {t.name} ({t.display_name}): {t.description or ''} [属性: {prop_names}]"
         )
@@ -659,13 +682,13 @@ async def execute_aip_function(db: AsyncSession, fn: AIPFunction, inputs: dict) 
         return {"error": str(e)}
 
 
-async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncIterator[dict]:
+async def process_chat_stream(db: AsyncSession, data: ChatRequest, user: User) -> AsyncIterator[dict]:
     """Streaming version of process_chat — yields SSE-compatible dicts."""
     system_prompt = "You are OntoForge AI assistant. You help users query and manage their ontology data."
     provider_id = None
     model_name = None
     temperature = 0.7
-    tools = ONTOLOGY_TOOLS
+    tools = _filter_tools_for_user(ONTOLOGY_TOOLS, user)
 
     if data.agent_id:
         agent_result = await db.execute(select(AIAgent).where(AIAgent.id == data.agent_id))
@@ -675,23 +698,32 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
             provider_id = str(agent.llm_provider_id) if agent.llm_provider_id else None
             model_name = agent.model_name
             temperature = agent.temperature
-            tools = _resolve_agent_tools(agent.tools)
+            tools = _resolve_agent_tools(agent.tools, user)
 
     conv_id: str
     messages_so_far: list
     conv: Optional[Conversation] = None
     if data.conversation_id:
-        conv_result = await db.execute(select(Conversation).where(Conversation.id == data.conversation_id))
+        conv_result = await db.execute(
+            select(Conversation).where(
+                Conversation.id == data.conversation_id,
+                Conversation.user_id == user.id,
+            )
+        )
         conv = conv_result.scalar_one_or_none()
         if conv:
             conv_id = conv.id
             messages_so_far = list(conv.messages)
         else:
-            conv_id = data.conversation_id
+            async with async_session() as sess:
+                new_conv = Conversation(agent_id=data.agent_id, user_id=user.id, title=data.message[:100], messages=[])
+                sess.add(new_conv)
+                await sess.commit()
+                conv_id = new_conv.id
             messages_so_far = []
     else:
         async with async_session() as sess:
-            new_conv = Conversation(agent_id=data.agent_id, title=data.message[:100], messages=[])
+            new_conv = Conversation(agent_id=data.agent_id, user_id=user.id, title=data.message[:100], messages=[])
             sess.add(new_conv)
             await sess.commit()
             conv_id = new_conv.id
@@ -751,7 +783,7 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
 
                 yield {"type": "tool_start", "tool": fn_name, "args": fn_args}
 
-                tool_result = await _execute_tool(db, fn_name, fn_args)
+                tool_result = await _execute_tool(db, fn_name, fn_args, user)
                 tool_parsed = json.loads(tool_result)
                 tool_calls_result.append({"tool": fn_name, "args": fn_args, "result": tool_parsed})
 
@@ -767,7 +799,12 @@ async def process_chat_stream(db: AsyncSession, data: ChatRequest) -> AsyncItera
 
     final_messages = [*messages_so_far, *turn_messages]
     async with async_session() as sess:
-        result = await sess.execute(select(Conversation).where(Conversation.id == conv_id))
+        result = await sess.execute(
+            select(Conversation).where(
+                Conversation.id == conv_id,
+                Conversation.user_id == user.id,
+            )
+        )
         conv_to_update = result.scalar_one_or_none()
         if conv_to_update:
             conv_to_update.messages = final_messages

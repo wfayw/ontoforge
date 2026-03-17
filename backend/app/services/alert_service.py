@@ -3,7 +3,7 @@
 import logging
 from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.alert import AlertRule, Alert
@@ -60,18 +60,25 @@ async def check_alerts_for_objects(
         select(ObjectInstance).where(ObjectInstance.id.in_(object_ids))
     )
     objects = objs_result.scalars().all()
+    rule_ids = [r.id for r in rules]
+    object_id_set = {obj.id for obj in objects}
+    if not object_id_set:
+        return []
+
+    existing_result = await db.execute(
+        select(Alert.rule_id, Alert.object_id).where(
+            Alert.rule_id.in_(rule_ids),
+            Alert.object_id.in_(object_id_set),
+        )
+    )
+    existing_pairs = {(rule_id, obj_id) for rule_id, obj_id in existing_result.all()}
 
     new_alerts: list[Alert] = []
     for obj in objects:
         for rule in rules:
             if _evaluate_condition(obj.properties, rule.condition):
-                existing = await db.execute(
-                    select(Alert).where(
-                        Alert.rule_id == rule.id,
-                        Alert.object_id == obj.id,
-                    )
-                )
-                if existing.scalar_one_or_none():
+                pair = (rule.id, obj.id)
+                if pair in existing_pairs:
                     continue
                 alert = Alert(
                     rule_id=rule.id,
@@ -82,6 +89,7 @@ async def check_alerts_for_objects(
                 )
                 db.add(alert)
                 new_alerts.append(alert)
+                existing_pairs.add(pair)
 
     if new_alerts:
         await db.flush()

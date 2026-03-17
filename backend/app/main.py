@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.database import engine, Base, init_sqlite_pragma
+from app.database import engine, Base, init_sqlite_pragma, ensure_schema_compatibility
 from app.api.v1 import router as api_router
 
 settings = get_settings()
@@ -18,6 +18,7 @@ async def lifespan(app: FastAPI):
     await init_sqlite_pragma()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await ensure_schema_compatibility()
 
     from app.services.scheduler import get_scheduler, startup_load_schedules
     sched = get_scheduler()
@@ -53,8 +54,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.CORS_ORIGINS or [],
+    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

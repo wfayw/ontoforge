@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -30,7 +30,7 @@ class AIAgentCreate(BaseModel):
     llm_provider_id: Optional[str] = None
     model_name: Optional[str] = None
     temperature: float = 0.7
-    tools: list[str] = []
+    tools: list[str] = Field(default_factory=list)
 
 
 class AIAgentUpdate(BaseModel):
@@ -64,8 +64,8 @@ class AIPFunctionCreate(BaseModel):
     display_name: str
     description: Optional[str] = None
     prompt_template: str
-    input_schema: dict = {}
-    output_schema: dict = {}
+    input_schema: dict = Field(default_factory=dict)
+    output_schema: dict = Field(default_factory=dict)
     llm_provider_id: Optional[str] = None
     model_name: Optional[str] = None
 
@@ -116,7 +116,7 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     conversation_id: str
     message: ChatMessage
-    tool_calls: list[dict] = []
+    tool_calls: list[dict] = Field(default_factory=list)
 
 
 class ConversationResponse(BaseModel):

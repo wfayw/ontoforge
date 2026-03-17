@@ -1,6 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.services.auth_service import get_current_user, require_editor
 from app.services.audit_service import create_audit_log
 from app.services.action_executor import execute_action, ActionError
 from app.services.analytics_service import aggregate
+from app.services.graph_service import fetch_neighbors_graph
 
 router = APIRouter()
 
@@ -81,7 +82,12 @@ async def get_object(obj_id: str, db: AsyncSession = Depends(get_db), _: User = 
 
 
 @router.patch("/objects/{obj_id}", response_model=ObjectInstanceResponse)
-async def update_object(obj_id: str, data: ObjectInstanceUpdate, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def update_object(
+    obj_id: str,
+    data: ObjectInstanceUpdate,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(require_editor),
+):
     result = await db.execute(select(ObjectInstance).where(ObjectInstance.id == obj_id))
     obj = result.scalar_one_or_none()
     if not obj:
@@ -94,15 +100,17 @@ async def update_object(obj_id: str, data: ObjectInstanceUpdate, db: AsyncSessio
         obj.properties = merged
     await db.flush()
     await db.refresh(obj)
+    await create_audit_log(db, user, "update", "object_instance", obj.id, {"display_name": obj.display_name})
     return obj
 
 
 @router.delete("/objects/{obj_id}", status_code=204)
-async def delete_object(obj_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def delete_object(obj_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
     result = await db.execute(select(ObjectInstance).where(ObjectInstance.id == obj_id))
     obj = result.scalar_one_or_none()
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
+    await create_audit_log(db, user, "delete", "object_instance", obj.id, {"display_name": obj.display_name})
     await db.delete(obj)
 
 
@@ -152,44 +160,14 @@ async def delete_link(link_id: str, db: AsyncSession = Depends(get_db), user: Us
 @router.get("/objects/{obj_id}/neighbors")
 async def get_neighbors(obj_id: str, depth: int = Query(1, ge=1, le=3), db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
     """Get neighboring objects connected via links (up to specified depth)."""
-    visited = set()
-    neighbors = []
-    edges = []
-
-    async def traverse(current_id: str, current_depth: int):
-        if current_depth > depth or current_id in visited:
-            return
-        visited.add(current_id)
-
-        links = await db.execute(
-            select(LinkInstance).where(
-                (LinkInstance.source_id == current_id) | (LinkInstance.target_id == current_id)
-            )
-        )
-        for link in links.scalars().all():
-            other_id = link.target_id if link.source_id == current_id else link.source_id
-            edges.append({
-                "id": str(link.id),
-                "link_type_id": str(link.link_type_id),
-                "source_id": str(link.source_id),
-                "target_id": str(link.target_id),
-            })
-            if other_id not in visited:
-                obj_result = await db.execute(select(ObjectInstance).where(ObjectInstance.id == other_id))
-                obj = obj_result.scalar_one_or_none()
-                if obj:
-                    neighbors.append(ObjectInstanceResponse.model_validate(obj).model_dump())
-                    await traverse(other_id, current_depth + 1)
-
-    await traverse(obj_id, 1)
-    return {"neighbors": neighbors, "edges": edges}
+    return await fetch_neighbors_graph(db, obj_id, depth=depth)
 
 
 # ── Action Execution ─────────────────────────────────────────
 
 class ActionExecuteRequest(BaseModel):
     action_type_id: str
-    params: dict = {}
+    params: dict = Field(default_factory=dict)
     dry_run: bool = False
 
 

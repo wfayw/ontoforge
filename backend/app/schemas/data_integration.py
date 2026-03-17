@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
 
@@ -7,7 +7,7 @@ class DataSourceCreate(BaseModel):
     name: str
     description: Optional[str] = None
     source_type: str
-    connection_config: dict = {}
+    connection_config: dict = Field(default_factory=dict)
 
 
 class DataSourceUpdate(BaseModel):
@@ -33,8 +33,8 @@ class PipelineCreate(BaseModel):
     description: Optional[str] = None
     source_id: str
     target_object_type_id: str
-    field_mappings: dict = {}
-    transform_steps: list = []
+    field_mappings: dict = Field(default_factory=dict)
+    transform_steps: list = Field(default_factory=list)
     schedule: Optional[str] = None
     schedule_config: Optional[dict] = None
     sync_mode: str = "full"

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { message } from 'antd';
 
 const api = axios.create({
   baseURL: '/api/v1',
@@ -21,7 +22,7 @@ api.interceptors.response.use(
       window.location.href = '/login';
     }
     if (error.response?.status === 403) {
-      import('antd').then(({ message }) => message.warning('权限不足 / Insufficient permissions'));
+      message.warning('权限不足 / Insufficient permissions');
     }
     return Promise.reject(error);
   }

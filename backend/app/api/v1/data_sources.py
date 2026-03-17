@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +11,7 @@ from app.schemas.data_integration import (
 from app.services.auth_service import get_current_user, require_editor
 from app.services.audit_service import create_audit_log
 from app.services.data_integration_service import test_connection, preview_data, upload_csv
+from app.services.security import encrypt_sensitive_config
 
 router = APIRouter()
 
@@ -23,7 +24,9 @@ async def list_data_sources(db: AsyncSession = Depends(get_db), _: User = Depend
 
 @router.post("/", response_model=DataSourceResponse, status_code=201)
 async def create_data_source(data: DataSourceCreate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
-    ds = DataSource(**data.model_dump())
+    payload = data.model_dump()
+    payload["connection_config"] = encrypt_sensitive_config(payload.get("connection_config") or {})
+    ds = DataSource(**payload)
     db.add(ds)
     await db.flush()
     await db.refresh(ds)
@@ -47,6 +50,8 @@ async def update_data_source(ds_id: str, data: DataSourceUpdate, db: AsyncSessio
     if not ds:
         raise HTTPException(status_code=404, detail="Data source not found")
     for field, value in data.model_dump(exclude_unset=True).items():
+        if field == "connection_config" and value is not None:
+            value = encrypt_sensitive_config(value)
         setattr(ds, field, value)
     await db.flush()
     await db.refresh(ds)
@@ -64,7 +69,7 @@ async def delete_data_source(ds_id: str, db: AsyncSession = Depends(get_db), use
 
 
 @router.post("/{ds_id}/test")
-async def test_data_source(ds_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def test_data_source(ds_id: str, db: AsyncSession = Depends(get_db), _: User = Depends(require_editor)):
     result = await db.execute(select(DataSource).where(DataSource.id == ds_id))
     ds = result.scalar_one_or_none()
     if not ds:
@@ -79,7 +84,12 @@ async def test_data_source(ds_id: str, db: AsyncSession = Depends(get_db), _: Us
 
 
 @router.get("/{ds_id}/preview", response_model=DataPreview)
-async def preview_data_source(ds_id: str, limit: int = 100, db: AsyncSession = Depends(get_db), _: User = Depends(get_current_user)):
+async def preview_data_source(
+    ds_id: str,
+    limit: int = Query(100, ge=1, le=1000),
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(require_editor),
+):
     result = await db.execute(select(DataSource).where(DataSource.id == ds_id))
     ds = result.scalar_one_or_none()
     if not ds:

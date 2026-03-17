@@ -1,6 +1,6 @@
 import io
 import os
-import csv as csv_module
+import re
 from pathlib import Path
 from typing import Tuple
 
@@ -10,10 +10,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.data_integration import DataSource
 from app.schemas.data_integration import DataPreview
+from app.config import get_settings
+from app.services.security import decrypt_sensitive_config, validate_rest_api_url
 
 _CSV_STORAGE: dict[str, pd.DataFrame] = {}
 _CSV_DIR = Path(os.environ.get("CSV_STORAGE_DIR", str(Path(__file__).resolve().parent.parent.parent / "csv_uploads")))
 _CSV_DIR.mkdir(parents=True, exist_ok=True)
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+settings = get_settings()
+
+
+def _safe_table_name(table_name: str) -> str:
+    if not table_name or not _TABLE_NAME_RE.match(table_name):
+        raise ValueError("Invalid table name")
+    return table_name
+
+
+def _source_cfg(ds: DataSource) -> dict:
+    return decrypt_sensitive_config(ds.connection_config or {})
 
 
 def _load_csv_from_disk(ds_id: str) -> pd.DataFrame | None:
@@ -44,7 +58,7 @@ async def test_connection(ds: DataSource) -> Tuple[bool, str]:
 
         elif ds.source_type == "postgres":
             import asyncpg
-            cfg = ds.connection_config
+            cfg = _source_cfg(ds)
             conn = await asyncpg.connect(
                 host=cfg.get("host", "localhost"),
                 port=cfg.get("port", 5432),
@@ -52,13 +66,16 @@ async def test_connection(ds: DataSource) -> Tuple[bool, str]:
                 password=cfg.get("password", ""),
                 database=cfg.get("database", ""),
             )
-            await conn.execute("SELECT 1")
-            await conn.close()
+            try:
+                await conn.execute("SELECT 1")
+            finally:
+                await conn.close()
             return True, "Connection successful"
 
         elif ds.source_type == "rest_api":
             import httpx
-            cfg = ds.connection_config
+            cfg = _source_cfg(ds)
+            validate_rest_api_url(cfg.get("url", ""), allow_private=settings.DEBUG)
             async with httpx.AsyncClient() as client:
                 resp = await client.get(cfg.get("url", ""), timeout=10)
                 resp.raise_for_status()
@@ -85,7 +102,7 @@ async def preview_data(ds: DataSource, limit: int = 100) -> DataPreview:
 
     elif ds.source_type == "postgres":
         import asyncpg
-        cfg = ds.connection_config
+        cfg = _source_cfg(ds)
         conn = await asyncpg.connect(
             host=cfg.get("host", "localhost"),
             port=cfg.get("port", 5432),
@@ -93,9 +110,11 @@ async def preview_data(ds: DataSource, limit: int = 100) -> DataPreview:
             password=cfg.get("password", ""),
             database=cfg.get("database", ""),
         )
-        table = cfg.get("table", "")
-        rows = await conn.fetch(f'SELECT * FROM "{table}" LIMIT {limit}')
-        await conn.close()
+        try:
+            table = _safe_table_name(cfg.get("table", ""))
+            rows = await conn.fetch(f'SELECT * FROM "{table}" LIMIT {limit}')
+        finally:
+            await conn.close()
         if not rows:
             return DataPreview(columns=[], rows=[], total_count=0)
         columns = list(rows[0].keys())
@@ -107,9 +126,11 @@ async def preview_data(ds: DataSource, limit: int = 100) -> DataPreview:
 
     elif ds.source_type == "rest_api":
         import httpx
-        cfg = ds.connection_config
+        cfg = _source_cfg(ds)
+        validate_rest_api_url(cfg.get("url", ""), allow_private=settings.DEBUG)
         async with httpx.AsyncClient() as client:
             resp = await client.get(cfg.get("url", ""), timeout=10)
+            resp.raise_for_status()
             data = resp.json()
         if isinstance(data, list):
             items = data[:limit]
@@ -136,7 +157,7 @@ async def fetch_source_data(ds: DataSource) -> pd.DataFrame:
 
     elif ds.source_type == "postgres":
         import asyncpg
-        cfg = ds.connection_config
+        cfg = _source_cfg(ds)
         conn = await asyncpg.connect(
             host=cfg.get("host", "localhost"),
             port=cfg.get("port", 5432),
@@ -144,18 +165,22 @@ async def fetch_source_data(ds: DataSource) -> pd.DataFrame:
             password=cfg.get("password", ""),
             database=cfg.get("database", ""),
         )
-        table = cfg.get("table", "")
-        rows = await conn.fetch(f'SELECT * FROM "{table}"')
-        await conn.close()
+        try:
+            table = _safe_table_name(cfg.get("table", ""))
+            rows = await conn.fetch(f'SELECT * FROM "{table}"')
+        finally:
+            await conn.close()
         if not rows:
             return pd.DataFrame()
         return pd.DataFrame([dict(r) for r in rows])
 
     elif ds.source_type == "rest_api":
         import httpx
-        cfg = ds.connection_config
+        cfg = _source_cfg(ds)
+        validate_rest_api_url(cfg.get("url", ""), allow_private=settings.DEBUG)
         async with httpx.AsyncClient() as client:
             resp = await client.get(cfg.get("url", ""), timeout=30)
+            resp.raise_for_status()
             data = resp.json()
         if isinstance(data, list):
             return pd.DataFrame(data)

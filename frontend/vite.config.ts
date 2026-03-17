@@ -4,6 +4,19 @@ import path from 'path'
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    chunkSizeWarningLimit: 900,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'antd-vendor': ['antd', '@ant-design/icons'],
+          'graph-vendor': ['@xyflow/react', 'react-grid-layout', 'react-resizable'],
+          'chart-vendor': ['recharts'],
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

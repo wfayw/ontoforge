@@ -1,3 +1,6 @@
+import json
+import logging
+import uuid
 from datetime import datetime
 
 import pandas as pd
@@ -7,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.data_integration import Pipeline, PipelineRun, DataSource
 from app.models.instance import ObjectInstance
 from app.services.data_integration_service import fetch_source_data
+
+logger = logging.getLogger("uvicorn.error")
 
 
 def apply_transforms(df: pd.DataFrame, steps: list) -> pd.DataFrame:
@@ -67,6 +72,8 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
     db.add(run)
     await db.flush()
 
+    row_error_samples: list[dict] = []
+
     try:
         source_result = await db.execute(select(DataSource).where(DataSource.id == pipeline.source_id))
         source = source_result.scalar_one_or_none()
@@ -86,11 +93,34 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
 
         existing_by_pk: dict[str, ObjectInstance] = {}
         if is_incremental and pk_prop:
-            result = await db.execute(
-                select(ObjectInstance).where(
+            pk_source_cols = [src for src, target in mappings.items() if target == pk_prop]
+            candidate_pk_values: set[str] = set()
+            for col in pk_source_cols:
+                if col not in df.columns:
+                    continue
+                for val in df[col].dropna().tolist():
+                    if isinstance(val, (pd.Timestamp, datetime)):
+                        candidate_pk_values.add(val.isoformat())
+                    else:
+                        candidate_pk_values.add(str(val))
+
+            try:
+                stmt = select(ObjectInstance).where(
                     ObjectInstance.object_type_id == pipeline.target_object_type_id
                 )
-            )
+                if candidate_pk_values:
+                    stmt = stmt.where(
+                        ObjectInstance.properties[pk_prop].as_string().in_(list(candidate_pk_values))
+                    )
+                result = await db.execute(stmt)
+            except Exception:
+                logger.warning("Incremental PK pre-filter failed, fallback to full target scan for pipeline %s", pipeline.id)
+                result = await db.execute(
+                    select(ObjectInstance).where(
+                        ObjectInstance.object_type_id == pipeline.target_object_type_id
+                    )
+                )
+
             for obj in result.scalars().all():
                 pk_val = obj.properties.get(pk_prop)
                 if pk_val is not None:
@@ -129,6 +159,7 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
                         continue
 
                 obj = ObjectInstance(
+                    id=str(uuid.uuid4()),
                     object_type_id=pipeline.target_object_type_id,
                     display_name=display,
                     properties=props,
@@ -137,11 +168,12 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
                     source_row_index=row_idx,
                 )
                 db.add(obj)
-                await db.flush()
                 new_object_ids.append(obj.id)
                 rows_created += 1
-            except Exception:
+            except Exception as exc:
                 rows_err += 1
+                if len(row_error_samples) < 20:
+                    row_error_samples.append({"row_index": row_idx, "error": str(exc)})
 
         await db.flush()
 
@@ -151,6 +183,8 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
         run.rows_updated = rows_updated
         run.rows_skipped = rows_skipped
         run.rows_failed = rows_err
+        if row_error_samples:
+            run.error_log = json.dumps({"row_errors": row_error_samples}, ensure_ascii=False)
         run.finished_at = datetime.utcnow()
         pipeline.status = "active"
 
@@ -163,7 +197,10 @@ async def execute_pipeline(db: AsyncSession, pipeline: Pipeline) -> PipelineRun:
 
     except Exception as e:
         run.status = "failed"
-        run.error_log = str(e)
+        payload = {"error": str(e)}
+        if row_error_samples:
+            payload["row_errors"] = row_error_samples
+        run.error_log = json.dumps(payload, ensure_ascii=False)
         run.finished_at = datetime.utcnow()
         pipeline.status = "error"
 

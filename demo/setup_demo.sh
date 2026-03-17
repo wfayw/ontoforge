@@ -80,7 +80,14 @@ while true; do
 done
 echo "    对象实例已清除"
 
-for res in "pipelines/" "data-sources/" "ontology/functions" "ontology/action-types" "ontology/link-types" "ontology/object-types" "workshop/apps" "aip/agents" "aip/functions"; do
+# 清除关联实例（SQLite 外键约束可能未启用，避免历史脏数据累计）
+LINK_IDS=$(api "instances/links" | python3 -c "import sys,json;[print(i['id']) for i in json.load(sys.stdin)]" 2>/dev/null || true)
+for lid in $LINK_IDS; do
+  api "instances/links/$lid" -X DELETE >/dev/null 2>&1 || true
+done
+echo "    关联实例已清除"
+
+for res in "pipelines/" "data-sources/" "ontology/functions" "ontology/action-types" "ontology/link-types" "ontology/object-types" "workshop/apps" "aip/agents" "aip/functions" "alerts/rules"; do
   IDS=$(api "$res" | python3 -c "import sys,json;d=json.load(sys.stdin);d=d if isinstance(d,list) else d.get('items',d);[print(i['id']) for i in (d if isinstance(d,list) else [])]" 2>/dev/null || true)
   for id in $IDS; do
     base_path=$(echo "$res" | sed 's|/$||')
