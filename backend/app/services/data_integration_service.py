@@ -12,7 +12,7 @@ from app.models.data_integration import DataSource
 from app.schemas.data_integration import DataPreview
 
 _CSV_STORAGE: dict[str, pd.DataFrame] = {}
-_CSV_DIR = Path(os.environ.get("CSV_STORAGE_DIR", "/app/csv_uploads"))
+_CSV_DIR = Path(os.environ.get("CSV_STORAGE_DIR", str(Path(__file__).resolve().parent.parent.parent / "csv_uploads")))
 _CSV_DIR.mkdir(parents=True, exist_ok=True)
 
 

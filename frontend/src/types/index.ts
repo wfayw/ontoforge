@@ -71,6 +71,19 @@ export interface ActionType {
   parameters: Record<string, unknown>;
   logic_type: string;
   logic_config: Record<string, unknown>;
+  side_effects: Array<Record<string, unknown>>;
+  created_at: string;
+}
+
+export interface OntologyFunction {
+  id: string;
+  name: string;
+  display_name: string;
+  description: string | null;
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  implementation_type: string;
+  implementation: string | null;
   created_at: string;
 }
 

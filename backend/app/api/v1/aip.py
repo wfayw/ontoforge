@@ -9,9 +9,9 @@ from app.database import get_db
 from app.models.user import User
 from app.models.aip import LLMProvider, AIAgent, AIPFunction, Conversation
 from app.schemas.aip import (
-    LLMProviderCreate, LLMProviderResponse,
+    LLMProviderCreate, LLMProviderResponse, LLMProviderUpdate,
     AIAgentCreate, AIAgentUpdate, AIAgentResponse,
-    AIPFunctionCreate, AIPFunctionResponse,
+    AIPFunctionCreate, AIPFunctionResponse, AIPFunctionUpdate,
     ChatRequest, ChatResponse, ConversationResponse,
     NLQueryRequest, NLQueryResponse,
 )
@@ -54,6 +54,22 @@ async def delete_provider(provider_id: str, db: AsyncSession = Depends(get_db), 
         raise HTTPException(status_code=404, detail="Provider not found")
     await create_audit_log(db, user, "delete_provider", "llm_provider", provider_id, {"name": p.name})
     await db.delete(p)
+
+
+@router.patch("/providers/{provider_id}", response_model=LLMProviderResponse)
+async def update_provider(provider_id: str, data: LLMProviderUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
+    result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        if field == "api_key":
+            p.api_key_encrypted = value or ""
+        else:
+            setattr(p, field, value)
+    await db.flush()
+    await db.refresh(p)
+    return p
 
 
 # ── AI Agents ─────────────────────────────────────────────────
@@ -131,6 +147,29 @@ async def run_function(func_id: str, inputs: dict, db: AsyncSession = Depends(ge
     if not fn:
         raise HTTPException(status_code=404, detail="Function not found")
     return await execute_aip_function(db, fn, inputs)
+
+
+@router.patch("/functions/{func_id}", response_model=AIPFunctionResponse)
+async def update_function(func_id: str, data: AIPFunctionUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
+    result = await db.execute(select(AIPFunction).where(AIPFunction.id == func_id))
+    fn = result.scalar_one_or_none()
+    if not fn:
+        raise HTTPException(status_code=404, detail="Function not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(fn, field, value)
+    await db.flush()
+    await db.refresh(fn)
+    return fn
+
+
+@router.delete("/functions/{func_id}", status_code=204)
+async def delete_function(func_id: str, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
+    result = await db.execute(select(AIPFunction).where(AIPFunction.id == func_id))
+    fn = result.scalar_one_or_none()
+    if not fn:
+        raise HTTPException(status_code=404, detail="Function not found")
+    await create_audit_log(db, user, "delete_function", "aip_function", func_id, {"name": fn.name})
+    await db.delete(fn)
 
 
 # ── Chat & Conversations ─────────────────────────────────────

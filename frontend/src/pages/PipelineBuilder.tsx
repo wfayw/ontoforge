@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Card, Button, Modal, Form, Input, Select, Table, Tag, Space, Typography, message, Tabs, Upload, Popconfirm, Empty, InputNumber, Switch } from 'antd';
-import { PlusOutlined, UploadOutlined, PlayCircleOutlined, DeleteOutlined, CloudServerOutlined, ApiOutlined, FileTextOutlined, ClockCircleOutlined, BellOutlined } from '@ant-design/icons';
+import { PlusOutlined, UploadOutlined, PlayCircleOutlined, DeleteOutlined, CloudServerOutlined, ApiOutlined, FileTextOutlined, ClockCircleOutlined, BellOutlined, EditOutlined } from '@ant-design/icons';
 import { dataSourceApi, pipelineApi, ontologyApi, alertApi } from '@/services/api';
 import { useI18n } from '@/i18n';
 import { usePermission } from '@/hooks/usePermission';
@@ -31,6 +31,15 @@ export default function PipelineBuilder() {
   const [plForm] = Form.useForm();
   const [scheduleForm] = Form.useForm();
   const [alertRuleForm] = Form.useForm();
+  const [editDsModalOpen, setEditDsModalOpen] = useState(false);
+  const [editingDs, setEditingDs] = useState<DataSource | null>(null);
+  const [editDsForm] = Form.useForm();
+  const [editPlModalOpen, setEditPlModalOpen] = useState(false);
+  const [editingPl, setEditingPl] = useState<Pipeline | null>(null);
+  const [editPlForm] = Form.useForm();
+  const [editAlertRuleModalOpen, setEditAlertRuleModalOpen] = useState(false);
+  const [editingAlertRule, setEditingAlertRule] = useState<{ id: string; name: string; object_type_id: string; condition: Record<string, unknown>; severity: string; is_active: boolean } | null>(null);
+  const [editAlertRuleForm] = Form.useForm();
 
   const fetchAll = async () => {
     const [ds, pl, ot, ar] = await Promise.all([
@@ -176,6 +185,77 @@ export default function PipelineBuilder() {
     } catch { message.error(t('aip.operationFailed')); }
   };
 
+  const openEditDs = (ds: DataSource) => {
+    setEditingDs(ds);
+    editDsForm.setFieldsValue({ name: ds.name, description: ds.description || '' });
+    setEditDsModalOpen(true);
+  };
+
+  const updateDataSource = async (values: Record<string, unknown>) => {
+    if (!editingDs) return;
+    try {
+      await dataSourceApi.update(editingDs.id, values);
+      message.success(t('pipeline.sourceUpdated'));
+      setEditDsModalOpen(false);
+      setEditingDs(null);
+      fetchAll();
+    } catch { message.error(t('pipeline.sourceUpdateFailed')); }
+  };
+
+  const openEditPl = (pl: Pipeline) => {
+    setEditingPl(pl);
+    editPlForm.setFieldsValue({
+      name: pl.name,
+      description: pl.description || '',
+      sync_mode: pl.sync_mode,
+      primary_key_property: pl.primary_key_property || '',
+    });
+    setEditPlModalOpen(true);
+  };
+
+  const updatePipeline = async (values: Record<string, unknown>) => {
+    if (!editingPl) return;
+    try {
+      await pipelineApi.update(editingPl.id, {
+        name: values.name,
+        description: values.description,
+        sync_mode: values.sync_mode,
+        primary_key_property: values.primary_key_property || null,
+      });
+      message.success(t('pipeline.pipelineUpdated'));
+      setEditPlModalOpen(false);
+      setEditingPl(null);
+      fetchAll();
+    } catch { message.error(t('pipeline.pipelineUpdateFailed')); }
+  };
+
+  const openEditAlertRule = (rule: typeof alertRules[0]) => {
+    setEditingAlertRule(rule);
+    editAlertRuleForm.setFieldsValue({
+      name: rule.name,
+      field: String(rule.condition.field || ''),
+      operator: String(rule.condition.operator || '=='),
+      threshold: String(rule.condition.value || ''),
+      severity: rule.severity,
+    });
+    setEditAlertRuleModalOpen(true);
+  };
+
+  const updateAlertRule = async (values: Record<string, unknown>) => {
+    if (!editingAlertRule) return;
+    try {
+      await alertApi.updateRule(editingAlertRule.id, {
+        name: values.name,
+        condition: { field: values.field, operator: values.operator, value: values.threshold },
+        severity: values.severity,
+      });
+      message.success(t('pipeline.ruleUpdated'));
+      setEditAlertRuleModalOpen(false);
+      setEditingAlertRule(null);
+      fetchAll();
+    } catch { message.error(t('pipeline.ruleUpdateFailed')); }
+  };
+
   const alertRuleColumns = [
     { title: t('common.name'), dataIndex: 'name', key: 'name', render: (v: string) => <Text strong style={{ color: 'var(--text-primary)' }}>{v}</Text> },
     { title: t('common.type'), dataIndex: 'object_type_id', key: 'type', render: (id: string) => <Tag>{objectTypes.find(o => o.id === id)?.display_name || id}</Tag> },
@@ -185,11 +265,14 @@ export default function PipelineBuilder() {
     { title: t('alerts.severity'), dataIndex: 'severity', key: 'sev',
       render: (v: string) => <Tag color={v === 'critical' ? 'red' : v === 'warning' ? 'orange' : 'blue'}>{v}</Tag>,
     },
-    { title: '', key: 'actions', width: 80,
-      render: (_: unknown, r: { id: string }) => (
-        <Popconfirm title={t('pipeline.deleteConfirm')} onConfirm={async () => { await alertApi.deleteRule(r.id); fetchAll(); }}>
-          <Button size="small" danger icon={<DeleteOutlined />} />
-        </Popconfirm>
+    { title: '', key: 'actions', width: 100,
+      render: (_: unknown, r: typeof alertRules[0]) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditAlertRule(r)} />
+          <Popconfirm title={t('pipeline.deleteConfirm')} onConfirm={async () => { await alertApi.deleteRule(r.id); fetchAll(); }}>
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
       ),
     },
   ];
@@ -199,9 +282,10 @@ export default function PipelineBuilder() {
     { title: t('common.type'), dataIndex: 'source_type', key: 'type', render: (v: string) => <Tag>{v.toUpperCase()}</Tag> },
     { title: t('common.status'), dataIndex: 'status', key: 'status', render: (v: string) => <Tag color={v === 'active' ? 'green' : v === 'error' ? 'red' : 'default'}>{v}</Tag> },
     {
-      title: '', key: 'actions', width: 200,
+      title: '', key: 'actions', width: 240,
       render: (_: unknown, record: DataSource) => (
         <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditDs(record)} />
           <Button size="small" onClick={() => testConnection(record.id)}>{t('common.test')}</Button>
           <Button size="small" onClick={() => showPreview(record.id)}>{t('common.preview')}</Button>
           <Popconfirm title={t('pipeline.deleteConfirm')} onConfirm={async () => { await dataSourceApi.delete(record.id); fetchAll(); }}>
@@ -224,9 +308,10 @@ export default function PipelineBuilder() {
         : <Tag>—</Tag>,
     },
     {
-      title: '', key: 'actions', width: 300,
+      title: '', key: 'actions', width: 340,
       render: (_: unknown, record: Pipeline) => (
         <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEditPl(record)} />
           <Button type="primary" size="small" icon={<PlayCircleOutlined />} onClick={() => runPipeline(record.id)}>{t('common.run')}</Button>
           <Button size="small" icon={<ClockCircleOutlined />} onClick={() => openSchedule(record)}>{t('pipeline.schedule')}</Button>
           <Button size="small" onClick={() => showRuns(record)}>{t('pipeline.runs')}</Button>
@@ -415,6 +500,48 @@ export default function PipelineBuilder() {
             </Space.Compact>
           </Form.Item>
           <Form.Item name="severity" label={t('alerts.severity')} initialValue="warning">
+            <Select options={[{ value: 'info', label: 'Info' }, { value: 'warning', label: 'Warning' }, { value: 'critical', label: 'Critical' }]} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title={t('pipeline.editDataSource')} open={editDsModalOpen} onCancel={() => { setEditDsModalOpen(false); setEditingDs(null); }} onOk={() => editDsForm.submit()} okText={t('common.save')}>
+        <Form form={editDsForm} onFinish={updateDataSource} layout="vertical">
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="description" label={t('common.description')}><Input /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title={t('pipeline.editPipeline')} open={editPlModalOpen} onCancel={() => { setEditPlModalOpen(false); setEditingPl(null); }} onOk={() => editPlForm.submit()} okText={t('common.save')}>
+        <Form form={editPlForm} onFinish={updatePipeline} layout="vertical">
+          <Form.Item name="name" label={t('pipeline.pipelineName')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="description" label={t('common.description')}><Input /></Form.Item>
+          <Form.Item name="sync_mode" label={t('pipeline.syncMode')}>
+            <Select options={[{ value: 'full', label: t('pipeline.syncFull') }, { value: 'incremental', label: t('pipeline.syncIncremental') }]} />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.sync_mode !== cur.sync_mode}>
+            {({ getFieldValue }) => getFieldValue('sync_mode') === 'incremental' ? (
+              <Form.Item name="primary_key_property" label={t('pipeline.primaryKey')}>
+                <Input placeholder="e.g. po_number" />
+              </Form.Item>
+            ) : null}
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title={t('pipeline.editAlertRule')} open={editAlertRuleModalOpen} onCancel={() => { setEditAlertRuleModalOpen(false); setEditingAlertRule(null); }} onOk={() => editAlertRuleForm.submit()} okText={t('common.save')} width={500}>
+        <Form form={editAlertRuleForm} onFinish={updateAlertRule} layout="vertical">
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item label={t('alerts.condition')} required>
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="field" noStyle rules={[{ required: true }]}><Input style={{ width: '40%' }} placeholder="property" /></Form.Item>
+              <Form.Item name="operator" noStyle rules={[{ required: true }]}>
+                <Select style={{ width: '25%' }} options={['==', '!=', '>', '>=', '<', '<=', 'contains'].map(o => ({ value: o, label: o }))} />
+              </Form.Item>
+              <Form.Item name="threshold" noStyle rules={[{ required: true }]}><Input style={{ width: '35%' }} placeholder="value" /></Form.Item>
+            </Space.Compact>
+          </Form.Item>
+          <Form.Item name="severity" label={t('alerts.severity')}>
             <Select options={[{ value: 'info', label: 'Info' }, { value: 'warning', label: 'Warning' }, { value: 'critical', label: 'Critical' }]} />
           </Form.Item>
         </Form>

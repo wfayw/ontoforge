@@ -1,0 +1,9 @@
+plant_code,name,city,country,capacity_per_day,product_line,status
+PLT-SH,上海浦东工厂,上海,中国,800,SUV/轿车,运行中
+PLT-CQ,重庆两江工厂,重庆,中国,600,轿车/MPV,运行中
+PLT-CC,长春一汽工厂,长春,中国,1000,新能源/SUV,运行中
+PLT-GZ,广州南沙工厂,广州,中国,500,MPV/轿车,维护中
+PLT-CD,成都天府工厂,成都,中国,450,新能源,运行中
+PLT-WH,武汉经开工厂,武汉,中国,700,SUV/皮卡,运行中
+PLT-TH,泰国罗勇工厂,Rayong,泰国,350,皮卡/SUV,运行中
+PLT-DE,慕尼黑研发工厂,Munich,德国,200,高端轿车,运行中

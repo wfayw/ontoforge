@@ -76,6 +76,7 @@ class ActionType(Base):
     parameters: Mapped[dict] = mapped_column(JSON, default=dict)
     logic_type: Mapped[str] = mapped_column(String(32), default="webhook")
     logic_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    side_effects: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

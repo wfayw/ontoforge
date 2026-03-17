@@ -5,6 +5,7 @@ import {
   ApartmentOutlined, DatabaseOutlined, ApiOutlined, RobotOutlined,
   LinkOutlined, NodeIndexOutlined, BellOutlined, ClockCircleOutlined,
   AppstoreOutlined, RightOutlined, CheckCircleOutlined, WarningOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { ontologyApi, instanceApi, dataSourceApi, pipelineApi, aipApi, alertApi, workshopApi } from '@/services/api';
@@ -274,15 +275,86 @@ export default function Dashboard() {
         </Row>
       )}
 
-      {/* Activity + Architecture */}
+      {/* Quick Start + Architecture / Activity */}
       <Row gutter={[16, 16]} style={{ marginTop: 24 }}>
-        <Col xs={24} lg={12}>
+        <Col xs={24} lg={recentActivity.length > 0 ? 12 : 12}>
           <Card
             className="anim-fade-in anim-stagger-5"
-            title={<Space><ClockCircleOutlined style={{ color: 'var(--color-cyan)' }} /><span style={{ color: 'var(--text-primary)' }}>{t('dashboard.quickStart')}</span></Space>}
+            title={<Space><CheckCircleOutlined style={{ color: 'var(--color-green)' }} /><span style={{ color: 'var(--text-primary)' }}>{t('dashboard.quickStart')}</span></Space>}
             style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}
           >
-            {recentActivity.length > 0 ? (
+            {(() => {
+              const steps = [
+                { done: stats.objectTypes > 0, title: t('dashboard.quickStep1Title'), desc: t('dashboard.quickStep1Desc'), icon: <ApartmentOutlined />, color: 'var(--color-blue)', path: '/ontology' },
+                { done: stats.pipelines > 0, title: t('dashboard.quickStep2Title'), desc: t('dashboard.quickStep2Desc'), icon: <ApiOutlined />, color: 'var(--color-cyan)', path: '/pipelines' },
+                { done: stats.objects > 0, title: t('dashboard.quickStep3Title'), desc: t('dashboard.quickStep3Desc'), icon: <DatabaseOutlined />, color: 'var(--color-yellow)', path: '/explorer' },
+                { done: stats.agents > 0, title: t('dashboard.quickStep4Title'), desc: t('dashboard.quickStep4Desc'), icon: <ExperimentOutlined />, color: 'var(--color-purple)', path: '/aip' },
+                { done: stats.workshopApps > 0, title: t('dashboard.quickStep5Title'), desc: t('dashboard.quickStep5Desc'), icon: <AppstoreOutlined />, color: 'var(--color-pink)', path: '/workshop' },
+              ];
+              const doneCount = steps.filter(s => s.done).length;
+              return (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+                    <div style={{
+                      flex: 1, height: 6, borderRadius: 3,
+                      background: 'var(--bg-elevated)', overflow: 'hidden',
+                    }}>
+                      <div style={{
+                        width: `${(doneCount / steps.length) * 100}%`, height: '100%', borderRadius: 3,
+                        background: 'linear-gradient(90deg, var(--color-green), var(--color-cyan))',
+                        transition: 'width 0.6s ease',
+                      }} />
+                    </div>
+                    <Text style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+                      {doneCount}/{steps.length}
+                    </Text>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {steps.map((step, idx) => (
+                      <div
+                        key={idx}
+                        onClick={() => navigate(step.path)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          padding: '10px 12px', borderRadius: 8, cursor: 'pointer',
+                          background: step.done ? 'transparent' : 'var(--bg-elevated)',
+                          border: step.done ? '1px solid var(--border-subtle)' : '1px solid var(--primary)',
+                          opacity: step.done ? 0.65 : 1,
+                          transition: 'all 0.2s',
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-elevated)'; e.currentTarget.style.opacity = '1'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = step.done ? 'transparent' : 'var(--bg-elevated)'; e.currentTarget.style.opacity = step.done ? '0.65' : '1'; }}
+                      >
+                        <div style={{
+                          width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          background: step.done ? 'var(--color-green)' : `${step.color}18`,
+                          color: step.done ? '#fff' : step.color, fontSize: 16,
+                        }}>
+                          {step.done ? <CheckCircleOutlined /> : step.icon}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>
+                            {idx + 1}. {step.title}
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 1 }}>{step.desc}</div>
+                        </div>
+                        <RightOutlined style={{ fontSize: 10, color: 'var(--text-quaternary)', flexShrink: 0 }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          {recentActivity.length > 0 ? (
+            <Card
+              className="anim-fade-in anim-stagger-6"
+              title={<Space><ClockCircleOutlined style={{ color: 'var(--color-cyan)' }} /><span style={{ color: 'var(--text-primary)' }}>{t('dashboard.recentActivity')}</span></Space>}
+              style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}
+            >
               <Timeline
                 items={recentActivity.map(a => ({
                   color: a.color,
@@ -295,41 +367,47 @@ export default function Dashboard() {
                   ),
                 }))}
               />
-            ) : (
-              <Timeline
-                items={[
-                  { dot: <CheckCircleOutlined style={{ color: 'var(--color-green)' }} />, children: <Text onClick={() => navigate('/ontology')} style={{ cursor: 'pointer', fontSize: 13 }}>1. {t('dashboard.quickStep1').replace(/<[^>]*>/g, '')} <RightOutlined style={{ fontSize: 10 }} /></Text> },
-                  { dot: <CheckCircleOutlined style={{ color: 'var(--color-blue)' }} />, children: <Text onClick={() => navigate('/pipelines')} style={{ cursor: 'pointer', fontSize: 13 }}>2. {t('dashboard.quickStep2').replace(/<[^>]*>/g, '')} <RightOutlined style={{ fontSize: 10 }} /></Text> },
-                  { dot: <CheckCircleOutlined style={{ color: 'var(--color-cyan)' }} />, children: <Text onClick={() => navigate('/explorer')} style={{ cursor: 'pointer', fontSize: 13 }}>3. {t('dashboard.quickStep3').replace(/<[^>]*>/g, '')} <RightOutlined style={{ fontSize: 10 }} /></Text> },
-                  { dot: <CheckCircleOutlined style={{ color: 'var(--color-purple)' }} />, children: <Text onClick={() => navigate('/aip')} style={{ cursor: 'pointer', fontSize: 13 }}>4. {t('dashboard.quickStep4').replace(/<[^>]*>/g, '')} <RightOutlined style={{ fontSize: 10 }} /></Text> },
-                ]}
-              />
-            )}
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card
-            className="anim-fade-in anim-stagger-6"
-            title={<span style={{ color: 'var(--text-primary)' }}>{t('dashboard.architecture')}</span>}
-            style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}
-          >
-            <div style={{ textAlign: 'center', padding: '16px 0' }}>
-              <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
-                {archLayers.map((layer, i) => (
-                  <Tag key={layer} style={{
-                    padding: '10px 18px', borderRadius: 8, fontSize: 13,
-                    background: `linear-gradient(135deg, ${archColors[i % archColors.length]}, transparent)`,
-                    border: '1px solid var(--border)', color: 'var(--text-secondary)',
-                  }}>
-                    {layer}
-                  </Tag>
-                ))}
+              <div style={{ textAlign: 'center', padding: '8px 0 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {archLayers.map((layer, i) => (
+                    <Tag key={layer} style={{
+                      padding: '6px 12px', borderRadius: 6, fontSize: 11,
+                      background: `linear-gradient(135deg, ${archColors[i % archColors.length]}, transparent)`,
+                      border: '1px solid var(--border)', color: 'var(--text-secondary)',
+                    }}>
+                      {layer}
+                    </Tag>
+                  ))}
+                </div>
+                <Text style={{ color: 'var(--text-tertiary)', fontSize: 11, display: 'block', marginTop: 8 }}>
+                  {t('dashboard.archFooter')}
+                </Text>
               </div>
-              <Text style={{ color: 'var(--text-tertiary)', fontSize: 12, display: 'block', marginTop: 12 }}>
-                {t('dashboard.archFooter')}
-              </Text>
-            </div>
-          </Card>
+            </Card>
+          ) : (
+            <Card
+              className="anim-fade-in anim-stagger-6"
+              title={<span style={{ color: 'var(--text-primary)' }}>{t('dashboard.architecture')}</span>}
+              style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)' }}
+            >
+              <div style={{ textAlign: 'center', padding: '16px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  {archLayers.map((layer, i) => (
+                    <Tag key={layer} style={{
+                      padding: '10px 18px', borderRadius: 8, fontSize: 13,
+                      background: `linear-gradient(135deg, ${archColors[i % archColors.length]}, transparent)`,
+                      border: '1px solid var(--border)', color: 'var(--text-secondary)',
+                    }}>
+                      {layer}
+                    </Tag>
+                  ))}
+                </div>
+                <Text style={{ color: 'var(--text-tertiary)', fontSize: 12, display: 'block', marginTop: 12 }}>
+                  {t('dashboard.archFooter')}
+                </Text>
+              </div>
+            </Card>
+          )}
         </Col>
       </Row>
     </div>

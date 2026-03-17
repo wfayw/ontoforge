@@ -1,12 +1,12 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Card, Table, Select, Input, Button, Space, Typography, Tag, Modal, Form, Descriptions, message, Popconfirm, Empty, Tabs, List } from 'antd';
-import { SearchOutlined, PlusOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, ApartmentOutlined, LinkOutlined, NodeIndexOutlined } from '@ant-design/icons';
-import { ontologyApi, instanceApi } from '@/services/api';
+import { Card, Table, Select, Input, Button, Space, Typography, Tag, Modal, Form, Descriptions, message, Popconfirm, Empty, Tabs, List, Switch, InputNumber, Collapse } from 'antd';
+import { SearchOutlined, PlusOutlined, DeleteOutlined, EyeOutlined, ThunderboltOutlined, ApartmentOutlined, LinkOutlined, NodeIndexOutlined, EditOutlined, ExperimentOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { ontologyApi, instanceApi, aipApi } from '@/services/api';
 import { useI18n } from '@/i18n';
 import PageHeader from '@/components/PageHeader';
 import ObjectGraphExplorer from '@/components/ObjectGraphExplorer';
-import type { ObjectType, ObjectInstance, ActionType, LinkType } from '@/types';
+import type { ObjectType, ObjectInstance, ActionType, LinkType, AIPFunction } from '@/types';
 
 const { Text } = Typography;
 
@@ -40,12 +40,21 @@ export default function ObjectExplorer() {
   const [executing, setExecuting] = useState<string | null>(null);
   const [neighbors, setNeighbors] = useState<{ id: string; display_name: string; object_type_id?: string; properties: Record<string, unknown> }[]>([]);
   const [neighborEdges, setNeighborEdges] = useState<{ source_id: string; target_id: string; link_type_id: string }[]>([]);
+  const [editOpen, setEditOpen] = useState(false);
+  const [editForm] = Form.useForm();
+  const [linkModalOpen, setLinkModalOpen] = useState(false);
+  const [linkForm] = Form.useForm();
+  const [allObjects, setAllObjects] = useState<ObjectInstance[]>([]);
   const [lineage, setLineage] = useState<Record<string, unknown> | null>(null);
+  const [aipFunctions, setAipFunctions] = useState<AIPFunction[]>([]);
+  const [fnRunning, setFnRunning] = useState<string | null>(null);
+  const [fnResults, setFnResults] = useState<Record<string, string>>({});
 
   useEffect(() => {
     ontologyApi.listObjectTypes().then(({ data }) => setObjectTypes(data));
     ontologyApi.listActionTypes().then(({ data }) => setActionTypes(data)).catch(() => {});
     ontologyApi.listLinkTypes().then(({ data }) => setLinkTypes(data)).catch(() => {});
+    aipApi.listFunctions().then(({ data }) => setAipFunctions(data)).catch(() => {});
   }, []);
 
   const fetchObjects = async () => {
@@ -141,6 +150,80 @@ export default function ObjectExplorer() {
       setExecuting(null);
     }
   }, [t, page, selectedTypeId, search]);
+
+  const openEdit = (obj: ObjectInstance) => {
+    const ot = objectTypes.find((o) => o.id === obj.object_type_id);
+    const fields: Record<string, unknown> = { display_name: obj.display_name };
+    if (ot) {
+      for (const prop of ot.properties) {
+        fields[prop.name] = obj.properties[prop.name] ?? '';
+      }
+    }
+    editForm.setFieldsValue(fields);
+    setEditOpen(true);
+  };
+
+  const saveEdit = async (values: Record<string, unknown>) => {
+    if (!selectedObj) return;
+    try {
+      const { display_name, ...rest } = values;
+      await instanceApi.updateObject(selectedObj.id, { display_name, properties: rest });
+      message.success(t('explorer.objectUpdated'));
+      setEditOpen(false);
+      const { data: refreshed } = await instanceApi.getObject(selectedObj.id);
+      setSelectedObj(refreshed);
+      fetchObjects();
+    } catch { message.error(t('explorer.objectUpdateFailed')); }
+  };
+
+  const openLinkModal = async () => {
+    linkForm.resetFields();
+    try {
+      const { data } = await instanceApi.listObjects({ page: 1, page_size: 500 });
+      setAllObjects(data.items);
+    } catch { setAllObjects([]); }
+    setLinkModalOpen(true);
+  };
+
+  const createNewLink = async (values: Record<string, unknown>) => {
+    if (!selectedObj) return;
+    try {
+      await instanceApi.createLink({
+        link_type_id: values.link_type_id,
+        source_id: selectedObj.id,
+        target_id: values.target_id,
+        properties: {},
+      });
+      message.success(t('explorer.linkCreated'));
+      setLinkModalOpen(false);
+      const [nbr] = await Promise.all([instanceApi.getNeighbors(selectedObj.id, 2)]);
+      setNeighbors(nbr.data.neighbors || []);
+      setNeighborEdges(nbr.data.edges || []);
+    } catch { message.error(t('explorer.linkCreateFailed')); }
+  };
+
+  const runAipFunction = useCallback(async (fn: AIPFunction, obj: ObjectInstance) => {
+    setFnRunning(fn.id);
+    try {
+      const ot = objectTypes.find((o) => o.id === obj.object_type_id);
+      const inputs: Record<string, string> = {
+        object_name: obj.display_name || '',
+        object_type: ot?.display_name || '',
+      };
+      if (obj.properties) {
+        for (const [k, v] of Object.entries(obj.properties)) {
+          inputs[k] = String(v ?? '');
+        }
+      }
+      const { data } = await aipApi.executeFunction(fn.id, inputs);
+      setFnResults((prev) => ({ ...prev, [fn.id]: data.output || data.error || JSON.stringify(data) }));
+      message.success(t('explorer.functionRunSuccess'));
+    } catch {
+      message.error(t('explorer.functionRunFailed'));
+    } finally {
+      setFnRunning(null);
+    }
+  }, [objectTypes, t]);
 
   const createObject = async (values: Record<string, unknown>) => {
     if (!selectedTypeId) { message.error(t('explorer.selectTypeFirst')); return; }
@@ -332,6 +415,48 @@ export default function ObjectExplorer() {
                   />
                 );
               })(),
+            },
+            {
+              key: 'aip',
+              label: <><ExperimentOutlined /> {t('explorer.aipFunctionsTab')}</>,
+              children: aipFunctions.length === 0 ? (
+                <Empty description={t('explorer.noAipFunctions')} image={Empty.PRESENTED_IMAGE_SIMPLE} style={{ padding: '48px 0' }} />
+              ) : (
+                <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                  <Tag color="blue" style={{ marginBottom: 4 }}>{t('explorer.functionAutoFill')}</Tag>
+                  <Collapse
+                    accordion
+                    items={aipFunctions.map((fn) => ({
+                      key: fn.id,
+                      label: (
+                        <Space>
+                          <ExperimentOutlined style={{ color: 'var(--primary)' }} />
+                          <Text strong>{fn.display_name}</Text>
+                          {fn.description && <Text style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>— {fn.description}</Text>}
+                        </Space>
+                      ),
+                      extra: (
+                        <Button
+                          type="primary"
+                          size="small"
+                          icon={<PlayCircleOutlined />}
+                          loading={fnRunning === fn.id}
+                          onClick={(e) => { e.stopPropagation(); runAipFunction(fn, selectedObj); }}
+                        >
+                          {fnRunning === fn.id ? t('explorer.functionRunning') : t('explorer.runFunction')}
+                        </Button>
+                      ),
+                      children: fnResults[fn.id] ? (
+                        <Card size="small" title={t('explorer.functionResult')} style={{ background: 'var(--bg-body)' }}>
+                          <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.7 }}>{fnResults[fn.id]}</div>
+                        </Card>
+                      ) : (
+                        <Text style={{ color: 'var(--text-tertiary)' }}>{t('explorer.runFunction')}</Text>
+                      ),
+                    }))}
+                  />
+                </Space>
+              ),
             },
             {
               key: 'lineage',

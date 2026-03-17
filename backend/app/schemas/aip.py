@@ -85,6 +85,23 @@ class AIPFunctionResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class LLMProviderUpdate(BaseModel):
+    name: Optional[str] = None
+    provider_type: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    default_model: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class AIPFunctionUpdate(BaseModel):
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    prompt_template: Optional[str] = None
+    llm_provider_id: Optional[str] = None
+    model_name: Optional[str] = None
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str

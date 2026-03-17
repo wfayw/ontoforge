@@ -1,0 +1,7 @@
+warehouse_code,name,city,country,capacity_sqm,status
+WH-SH01,上海嘉定中心仓,上海,中国,50000,在用
+WH-CQ01,重庆保税物流仓,重庆,中国,30000,在用
+WH-CC01,长春汽配集散仓,长春,中国,40000,在用
+WH-GZ01,广州南沙保税仓,广州,中国,25000,在用
+WH-DE01,Hamburg 欧洲中转仓,Hamburg,德国,15000,在用
+WH-TH01,Laem Chabang 仓库,Chonburi,泰国,12000,在用

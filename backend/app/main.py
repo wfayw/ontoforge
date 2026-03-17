@@ -47,7 +47,7 @@ async def _load_schedules_bg():
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="OntoForge — Open-source data operations platform with Ontology, Data Integration, and AI capabilities.",
+    description="OntoForge — Intelligent data operations platform with Ontology, Data Integration, and AI capabilities.",
     lifespan=lifespan,
 )
 

@@ -80,7 +80,7 @@ while true; do
 done
 echo "    对象实例已清除"
 
-for res in "pipelines/" "data-sources/" "ontology/action-types" "ontology/link-types" "ontology/object-types" "workshop/apps" "aip/agents"; do
+for res in "pipelines/" "data-sources/" "ontology/functions" "ontology/action-types" "ontology/link-types" "ontology/object-types" "workshop/apps" "aip/agents" "aip/functions"; do
   IDS=$(api "$res" | python3 -c "import sys,json;d=json.load(sys.stdin);d=d if isinstance(d,list) else d.get('items',d);[print(i['id']) for i in (d if isinstance(d,list) else [])]" 2>/dev/null || true)
   for id in $IDS; do
     base_path=$(echo "$res" | sed 's|/$||')
@@ -467,10 +467,81 @@ api_json "aip/agents" -X POST -d "{
   \"system_prompt\": \"你是OntoForge供应链管理AI助手。本系统管理20家供应商(6国)、30种零件(10大类)、8座工厂(3国)、6个仓库、150笔采购订单(18个月)、50条质检记录和71条物流记录。你可以：查询本体数据、执行操作(审批/驳回订单、确认到货/物流)、做聚合分析(按供应商/状态/月份/零件类别)、创建修改对象、搜索文档知识库。已知风险：SUP-015(泰源精密)评级C级且质量恶化中，广州工厂维护中。请用中文回答，简洁专业。\",
   $PROVIDER_FIELD
   \"temperature\": 0.3,
-  \"tools\": [\"ontology_query\", \"action_execute\", \"analytics\", \"instance_write\", \"document_search\"],
+  \"tools\": [\"ontology_query\", \"action_execute\", \"analytics\", \"instance_write\", \"document_search\", \"aip_functions\"],
   \"status\": \"active\"
 }" >/dev/null
-echo "    供应链分析师 — 已创建"
+echo "    供应链分析师 — 已创建（含 AIP 函数调用能力）"
+
+# ── 8b. 创建 AIP 函数 (3 个) ─────────────────────────────
+echo ""
+echo ">>> 8b. 创建 AIP 函数 (3 个)..."
+
+api_json "aip/functions" -X POST -d "{
+  \"name\": \"supplier_risk_analysis\",
+  \"display_name\": \"供应商风险评估\",
+  \"description\": \"基于供应商的评级、国家、交付和质检数据，AI 自动生成风险等级和改进建议\",
+  \"prompt_template\": \"请对以下供应商进行全面风险评估并给出改进建议：\\n\\n供应商名称：{{object_name}}\\n供应商编码：{{supplier_code}}\\n所在国家：{{country}}\\n当前评级：{{rating}}\\n联系方式：{{contact_email}}\\n\\n请从以下维度分析：\\n1. 供应稳定性风险（基于国家和评级）\\n2. 质量风险（基于评级趋势）\\n3. 综合风险等级（高/中/低）\\n4. 具体改进建议（3-5条）\\n\\n请用中文回答，格式清晰。\",
+  \"input_schema\": {\"supplier_code\": \"string\", \"country\": \"string\", \"rating\": \"string\", \"contact_email\": \"string\"},
+  \"output_schema\": {}
+}" >/dev/null
+echo "    供应商风险评估 — 已创建"
+
+api_json "aip/functions" -X POST -d "{
+  \"name\": \"order_anomaly_detection\",
+  \"display_name\": \"订单异常检测\",
+  \"description\": \"分析采购订单的金额、数量和状态，识别潜在异常并给出处理建议\",
+  \"prompt_template\": \"请分析以下采购订单是否存在异常：\\n\\n订单名称：{{object_name}}\\n订单类型：{{object_type}}\\n订单编号：{{po_number}}\\n供应商编码：{{supplier_code}}\\n零件编码：{{part_code}}\\n数量：{{quantity}}\\n单价：{{unit_price}}\\n状态：{{status}}\\n下单日期：{{order_date}}\\n交付日期：{{delivery_date}}\\n\\n请检查：\\n1. 价格是否合理（与行业标准比较）\\n2. 数量是否异常（过大或过小）\\n3. 交期是否合理\\n4. 状态流转是否正常\\n5. 综合异常等级和建议\\n\\n请用中文回答。\",
+  \"input_schema\": {\"po_number\": \"string\", \"supplier_code\": \"string\", \"part_code\": \"string\", \"quantity\": \"string\", \"unit_price\": \"string\", \"status\": \"string\"},
+  \"output_schema\": {}
+}" >/dev/null
+echo "    订单异常检测 — 已创建"
+
+api_json "aip/functions" -X POST -d "{
+  \"name\": \"quality_report_generator\",
+  \"display_name\": \"质检报告生成\",
+  \"description\": \"根据质检记录自动生成结构化质量分析报告\",
+  \"prompt_template\": \"请根据以下质检记录生成一份结构化质量分析报告：\\n\\n检测名称：{{object_name}}\\n检测编号：{{inspection_code}}\\n供应商编码：{{supplier_code}}\\n零件编码：{{part_code}}\\n检测批次数量：{{batch_size}}\\n缺陷数量：{{defect_count}}\\n检测结果：{{result}}\\n检测日期：{{inspection_date}}\\n备注：{{notes}}\\n\\n报告应包含：\\n1. 质量概况摘要\\n2. 缺陷率分析（缺陷数/批次数）\\n3. 与行业标准对比\\n4. 根因推测\\n5. 纠正措施建议\\n6. 后续跟踪计划\\n\\n请用中文输出正式报告格式。\",
+  \"input_schema\": {\"inspection_code\": \"string\", \"supplier_code\": \"string\", \"part_code\": \"string\", \"batch_size\": \"string\", \"defect_count\": \"string\", \"result\": \"string\"},
+  \"output_schema\": {}
+}" >/dev/null
+echo "    质检报告生成 — 已创建"
+
+# ── 8c. 创建 Ontology Functions (3 个) ──────────────────
+echo ""
+echo ">>> 8c. 创建 Ontology Functions (3 个计算函数)..."
+
+api_json "ontology/functions" -X POST -d "{
+  \"name\": \"calc_total_amount\",
+  \"display_name\": \"计算总金额\",
+  \"description\": \"根据数量和单价计算总金额\",
+  \"input_schema\": {\"quantity\": \"integer\", \"unit_price\": \"float\"},
+  \"output_schema\": {\"total\": \"float\"},
+  \"implementation_type\": \"python\",
+  \"implementation\": \"quantity * unit_price\"
+}" >/dev/null
+echo "    计算总金额 — 已创建"
+
+api_json "ontology/functions" -X POST -d "{
+  \"name\": \"supplier_risk_score\",
+  \"display_name\": \"供应商风险评分\",
+  \"description\": \"根据交付准时率、质检合格率和历史评分计算加权风险评分\",
+  \"input_schema\": {\"on_time_rate\": \"float\", \"quality_rate\": \"float\", \"history_score\": \"float\"},
+  \"output_schema\": {\"risk_score\": \"float\"},
+  \"implementation_type\": \"python\",
+  \"implementation\": \"round(on_time_rate * 0.4 + quality_rate * 0.4 + history_score * 0.2, 2)\"
+}" >/dev/null
+echo "    供应商风险评分 — 已创建"
+
+api_json "ontology/functions" -X POST -d "{
+  \"name\": \"delivery_eta_days\",
+  \"display_name\": \"预计到货天数\",
+  \"description\": \"根据距离和运输方式计算预计到货天数\",
+  \"input_schema\": {\"distance_km\": \"float\", \"mode\": \"string\"},
+  \"output_schema\": {\"eta_days\": \"integer\"},
+  \"implementation_type\": \"python\",
+  \"implementation\": \"ceil(distance_km / 800) if mode == 'truck' else ceil(distance_km / 200) if mode == 'ship' else ceil(distance_km / 2000)\"
+}" >/dev/null
+echo "    预计到货天数 — 已创建"
 
 # ── 9. 创建告警规则 (3 条) ──────────────────────────────
 echo ""

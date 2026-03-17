@@ -68,6 +68,13 @@ export default function AIPStudio() {
   const [functionForm] = Form.useForm();
   const [docForm] = Form.useForm();
 
+  const [editProviderModalOpen, setEditProviderModalOpen] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<LLMProvider | null>(null);
+  const [editProviderForm] = Form.useForm();
+  const [editFunctionModalOpen, setEditFunctionModalOpen] = useState(false);
+  const [editingFunction, setEditingFunction] = useState<AIPFunction | null>(null);
+  const [editFunctionForm] = Form.useForm();
+
   const fetchAll = async () => {
     const [p, a, f, c, d] = await Promise.all([
       aipApi.listProviders(), aipApi.listAgents(), aipApi.listFunctions(),
@@ -283,6 +290,53 @@ export default function AIPStudio() {
       docForm.resetFields();
       fetchAll();
     } catch { message.error(t('aip.operationFailed')); }
+  };
+
+  const openEditProvider = (p: LLMProvider) => {
+    setEditingProvider(p);
+    editProviderForm.setFieldsValue({
+      name: p.name,
+      provider_type: p.provider_type,
+      base_url: p.base_url,
+      default_model: p.default_model,
+      api_key: '',
+    });
+    setEditProviderModalOpen(true);
+  };
+
+  const updateProvider = async (values: Record<string, unknown>) => {
+    if (!editingProvider) return;
+    try {
+      const payload: Record<string, unknown> = { ...values };
+      if (!payload.api_key) delete payload.api_key;
+      await aipApi.updateProvider(editingProvider.id, payload);
+      message.success(t('aip.providerUpdated'));
+      setEditProviderModalOpen(false);
+      setEditingProvider(null);
+      fetchAll();
+    } catch { message.error(t('aip.providerUpdateFailed')); }
+  };
+
+  const openEditFunction = (fn: AIPFunction) => {
+    setEditingFunction(fn);
+    editFunctionForm.setFieldsValue({
+      display_name: fn.display_name,
+      description: fn.description || '',
+      prompt_template: fn.prompt_template,
+      llm_provider_id: fn.llm_provider_id || undefined,
+    });
+    setEditFunctionModalOpen(true);
+  };
+
+  const updateFunction = async (values: Record<string, unknown>) => {
+    if (!editingFunction) return;
+    try {
+      await aipApi.updateFunction(editingFunction.id, values);
+      message.success(t('aip.functionUpdated'));
+      setEditFunctionModalOpen(false);
+      setEditingFunction(null);
+      fetchAll();
+    } catch { message.error(t('aip.functionUpdateFailed')); }
   };
 
   const openFnTest = (fn: AIPFunction) => {
@@ -585,6 +639,10 @@ export default function AIPStudio() {
                 renderItem={(fn) => (
                   <List.Item actions={[
                     <Button size="small" icon={<PlayCircleOutlined />} onClick={() => openFnTest(fn)}>{t('aip.testFunction')}</Button>,
+                    <Button size="small" icon={<EditOutlined />} onClick={() => openEditFunction(fn)}>{t('common.edit')}</Button>,
+                    <Popconfirm title={t('aip.deleteConfirm')} onConfirm={async () => { await aipApi.deleteFunction(fn.id); message.success(t('aip.functionDeleted')); fetchAll(); }}>
+                      <Button size="small" danger icon={<DeleteOutlined />} />
+                    </Popconfirm>,
                   ]}>
                     <List.Item.Meta
                       avatar={<ThunderboltOutlined style={{ fontSize: 24, color: 'var(--color-yellow)' }} />}
@@ -608,6 +666,7 @@ export default function AIPStudio() {
                 renderItem={(p) => (
                   <List.Item
                     actions={[
+                      <Button size="small" icon={<EditOutlined />} onClick={() => openEditProvider(p)}>{t('common.edit')}</Button>,
                       <Popconfirm title={t('aip.deleteConfirm')} onConfirm={async () => { await aipApi.deleteProvider(p.id); fetchAll(); }}>
                         <Button size="small" danger icon={<DeleteOutlined />} />
                       </Popconfirm>,
@@ -668,6 +727,8 @@ export default function AIPStudio() {
               { value: 'analytics', label: t('aip.toolAnalytics') },
               { value: 'instance_write', label: t('aip.toolInstanceWrite') },
               { value: 'document_search', label: t('aip.toolDocumentSearch') },
+              { value: 'aip_functions', label: t('aip.toolFunctionCall') },
+              { value: 'ontology_functions', label: t('aip.toolOntologyFunctions') },
             ]} />
           </Form.Item>
           {editingAgent && (
@@ -754,6 +815,31 @@ export default function AIPStudio() {
           </Space>
         )}
       </Drawer>
+
+      <Modal title={t('aip.editProvider')} open={editProviderModalOpen} onCancel={() => { setEditProviderModalOpen(false); setEditingProvider(null); }} onOk={() => editProviderForm.submit()} okText={t('common.save')}>
+        <Form form={editProviderForm} onFinish={updateProvider} layout="vertical">
+          <Form.Item name="name" label={t('common.name')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="provider_type" label={t('aip.providerType')} rules={[{ required: true }]}>
+            <Select options={[{ value: 'openai', label: 'OpenAI' }, { value: 'anthropic', label: 'Anthropic' }, { value: 'local', label: 'Local / Custom' }]} />
+          </Form.Item>
+          <Form.Item name="base_url" label={t('aip.baseUrl')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="api_key" label={t('aip.apiKey')} help="Leave blank to keep existing key"><Input.Password placeholder="sk-..." /></Form.Item>
+          <Form.Item name="default_model" label={t('aip.defaultModel')} rules={[{ required: true }]}><Input /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal title={t('aip.editFunction')} open={editFunctionModalOpen} onCancel={() => { setEditFunctionModalOpen(false); setEditingFunction(null); }} onOk={() => editFunctionForm.submit()} okText={t('common.save')} width={600}>
+        <Form form={editFunctionForm} onFinish={updateFunction} layout="vertical">
+          <Form.Item name="display_name" label={t('ontology.displayName')} rules={[{ required: true }]}><Input /></Form.Item>
+          <Form.Item name="description" label={t('common.description')}><Input /></Form.Item>
+          <Form.Item name="prompt_template" label={t('aip.promptTemplate')} rules={[{ required: true }]}>
+            <TextArea rows={4} />
+          </Form.Item>
+          <Form.Item name="llm_provider_id" label={t('aip.llmProvider')}>
+            <Select allowClear options={providers.map((p) => ({ value: p.id, label: p.name }))} placeholder={t('aip.useDefault')} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }

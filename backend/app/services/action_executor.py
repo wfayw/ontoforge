@@ -1,7 +1,10 @@
+import asyncio
 import logging
 import re
+import time
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,13 +82,20 @@ async def execute_action(
         }
 
     if logic_type == "edit_object":
-        return await _exec_edit(db, config, validated, action.display_name)
+        action_result = await _exec_edit(db, config, validated, action.display_name)
     elif logic_type == "create_object":
-        return await _exec_create(db, config, validated, action.display_name)
+        action_result = await _exec_create(db, config, validated, action.display_name)
     elif logic_type == "delete_object":
-        return await _exec_delete(db, config, validated, action.display_name)
+        action_result = await _exec_delete(db, config, validated, action.display_name)
     else:
         raise ActionError(f"Unsupported logic type: {logic_type}")
+
+    side_effects = action.side_effects or []
+    if side_effects and action_result.get("success"):
+        se_results = await _fire_side_effects(side_effects, validated, action_result)
+        action_result["side_effects"] = se_results
+
+    return action_result
 
 
 async def _exec_edit(db: AsyncSession, config: dict, params: dict, action_name: str) -> dict:
@@ -153,3 +163,87 @@ async def _exec_delete(db: AsyncSession, config: dict, params: dict, action_name
         "message": f"Object '{display}' deleted",
         "object_id": target_id,
     }
+
+
+def _render_template_deep(obj: Any, params: dict[str, Any]) -> Any:
+    """Recursively render {{var}} templates in strings, dicts, and lists."""
+    if isinstance(obj, str):
+        return _render_template(obj, params)
+    if isinstance(obj, dict):
+        return {k: _render_template_deep(v, params) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_render_template_deep(item, params) for item in obj]
+    return obj
+
+
+async def _fire_one_side_effect(
+    effect: dict,
+    params: dict[str, Any],
+    action_result: dict,
+) -> dict:
+    """Execute a single webhook side-effect with retry."""
+    merged_vars = {**params, **action_result}
+
+    url = _render_template(effect.get("url", ""), merged_vars)
+    method = effect.get("method", "POST").upper()
+    headers = _render_template_deep(effect.get("headers", {}), merged_vars)
+    body = _render_template_deep(effect.get("body", {}), merged_vars)
+    timeout = effect.get("timeout", 30)
+    retry_count = effect.get("retry_count", 0)
+
+    last_error = ""
+    for attempt in range(max(1, retry_count + 1)):
+        start = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.request(
+                    method, url,
+                    headers=headers,
+                    json=body if method in ("POST", "PUT", "PATCH") else None,
+                    params=body if method == "GET" else None,
+                )
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.info(
+                "Side-effect %s %s → %s (%dms, attempt %d)",
+                method, url, resp.status_code, duration_ms, attempt + 1,
+            )
+            return {
+                "url": url,
+                "method": method,
+                "status_code": resp.status_code,
+                "response_body": resp.text[:1000],
+                "duration_ms": duration_ms,
+                "success": 200 <= resp.status_code < 300,
+                "attempts": attempt + 1,
+            }
+        except Exception as e:
+            last_error = str(e)
+            logger.warning(
+                "Side-effect %s %s attempt %d failed: %s",
+                method, url, attempt + 1, last_error,
+            )
+            if attempt < retry_count:
+                await asyncio.sleep(min(2 ** attempt, 10))
+
+    return {
+        "url": url,
+        "method": method,
+        "status_code": 0,
+        "error": last_error,
+        "success": False,
+        "attempts": max(1, retry_count + 1),
+    }
+
+
+async def _fire_side_effects(
+    effects: list[dict],
+    params: dict[str, Any],
+    action_result: dict,
+) -> list[dict]:
+    """Fire all configured side-effects concurrently."""
+    tasks = [_fire_one_side_effect(e, params, action_result) for e in effects]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return [
+        r if isinstance(r, dict) else {"error": str(r), "success": False}
+        for r in results
+    ]

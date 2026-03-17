@@ -9,13 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
 from app.models.aip import AIAgent, AIPFunction, Conversation, LLMProvider
-from app.models.ontology import ObjectType, PropertyDefinition, ActionType, LinkType
+from app.models.ontology import ObjectType, PropertyDefinition, ActionType, LinkType, FunctionDef
 from app.models.instance import ObjectInstance, LinkInstance
 from app.schemas.aip import ChatRequest, ChatResponse, ChatMessage, NLQueryRequest, NLQueryResponse
 from app.services.llm_provider import get_llm_client, chat_completion, chat_completion_stream
 from app.services.action_executor import execute_action, ActionError
 from app.services.analytics_service import aggregate
 from app.services.rag_service import search_documents
+from app.services.function_executor import execute_function, FunctionError
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -163,6 +164,52 @@ ONTOLOGY_TOOLS = [
                     "limit": {"type": "integer", "description": "Max results to return", "default": 5},
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_aip_functions",
+            "description": "List all available AIP functions (reusable AI prompt templates). Each function has a name, description, and prompt_template with {{variable}} placeholders.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_aip_function",
+            "description": "Execute an AIP function by its name. Provide input values for the template variables. The function's prompt template will be filled with the inputs and sent to the LLM.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "function_name": {"type": "string", "description": "Name of the AIP function to execute"},
+                    "inputs": {"type": "object", "description": "Key-value pairs for template variables, e.g. {\"supplier_name\": \"ACME\"}"},
+                },
+                "required": ["function_name", "inputs"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_ontology_functions",
+            "description": "List all Ontology Functions (computed business logic). Each function has a name, description, input_schema, and a Python expression implementation.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_ontology_function",
+            "description": "Execute an Ontology Function by name with given inputs. Returns the computed result.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "function_name": {"type": "string", "description": "Name of the ontology function"},
+                    "inputs": {"type": "object", "description": "Input values matching the function's input_schema"},
+                },
+                "required": ["function_name", "inputs"],
             },
         },
     },
@@ -314,8 +361,57 @@ async def _execute_tool(db: AsyncSession, name: str, args: dict) -> str:
         results = await search_documents(db, query=query_text, limit=limit)
         return json.dumps(results)
 
+    elif name == "list_aip_functions":
+        result = await db.execute(select(AIPFunction).order_by(AIPFunction.created_at.desc()))
+        fns = result.scalars().all()
+        return json.dumps([{
+            "name": f.name, "display_name": f.display_name,
+            "description": f.description,
+            "template_variables": _extract_template_vars(f.prompt_template),
+        } for f in fns])
+
+    elif name == "run_aip_function":
+        fn_name = args.get("function_name")
+        inputs = args.get("inputs", {})
+        result = await db.execute(select(AIPFunction).where(AIPFunction.name == fn_name))
+        fn = result.scalar_one_or_none()
+        if not fn:
+            return json.dumps({"error": f"AIP function not found: {fn_name}"})
+        fn_result = await execute_aip_function(db, fn, inputs)
+        return json.dumps(fn_result)
+
+    elif name == "list_ontology_functions":
+        result = await db.execute(select(FunctionDef).order_by(FunctionDef.created_at.desc()))
+        fns = result.scalars().all()
+        return json.dumps([{
+            "name": f.name, "display_name": f.display_name,
+            "description": f.description,
+            "input_schema": f.input_schema,
+            "implementation": f.implementation,
+        } for f in fns])
+
+    elif name == "run_ontology_function":
+        fn_name = args.get("function_name")
+        inputs = args.get("inputs", {})
+        result = await db.execute(select(FunctionDef).where(FunctionDef.name == fn_name))
+        fn = result.scalar_one_or_none()
+        if not fn:
+            return json.dumps({"error": f"Ontology function not found: {fn_name}"})
+        if not fn.implementation:
+            return json.dumps({"error": f"Function '{fn_name}' has no implementation"})
+        try:
+            output = execute_function(fn.implementation, inputs)
+            return json.dumps({"result": output})
+        except FunctionError as e:
+            return json.dumps({"error": str(e)})
+
     return json.dumps({"error": f"Unknown tool: {name}"})
 
+
+import re as _re
+
+def _extract_template_vars(template: str) -> list[str]:
+    return list(dict.fromkeys(_re.findall(r"\{\{(\w+)\}\}", template)))
 
 _TOOL_CATEGORY_MAP = {
     "ontology_query": ["get_object_types", "search_objects", "count_objects", "get_neighbors"],
@@ -323,6 +419,8 @@ _TOOL_CATEGORY_MAP = {
     "analytics": ["aggregate_objects"],
     "instance_write": ["update_object", "create_object"],
     "document_search": ["document_search"],
+    "aip_functions": ["list_aip_functions", "run_aip_function"],
+    "ontology_functions": ["list_ontology_functions", "run_ontology_function"],
 }
 
 _TOOL_BY_NAME = {t["function"]["name"]: t for t in ONTOLOGY_TOOLS}

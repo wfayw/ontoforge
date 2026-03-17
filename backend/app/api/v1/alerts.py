@@ -24,6 +24,14 @@ class AlertRuleCreate(BaseModel):
     is_active: bool = True
 
 
+class AlertRuleUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    condition: Optional[dict] = None
+    severity: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class AlertRuleResponse(BaseModel):
     id: str
     name: str
@@ -73,6 +81,19 @@ async def delete_rule(rule_id: str, db: AsyncSession = Depends(get_db), user: Us
         raise HTTPException(status_code=404, detail="Rule not found")
     await create_audit_log(db, user, "delete_rule", "alert_rule", rule_id, {"name": rule.name})
     await db.delete(rule)
+
+
+@router.patch("/rules/{rule_id}", response_model=AlertRuleResponse)
+async def update_rule(rule_id: str, data: AlertRuleUpdate, db: AsyncSession = Depends(get_db), user: User = Depends(require_editor)):
+    result = await db.execute(select(AlertRule).where(AlertRule.id == rule_id))
+    rule = result.scalar_one_or_none()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Rule not found")
+    for field, value in data.model_dump(exclude_unset=True).items():
+        setattr(rule, field, value)
+    await db.flush()
+    await db.refresh(rule)
+    return rule
 
 
 class AlertListResponse(BaseModel):

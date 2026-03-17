@@ -38,6 +38,7 @@ import {
   SearchOutlined,
 } from '@ant-design/icons';
 import { instanceApi } from '@/services/api';
+import { useI18n } from '@/i18n';
 import type { ObjectType, LinkType } from '@/types';
 
 // ─── Types ───────────────────────────────────────────────
@@ -51,6 +52,7 @@ interface GraphNodeData {
   expanded: boolean;
   loading: boolean;
   hiddenCount: number;
+  hiddenLabel: string;
   isRoot: boolean;
   [key: string]: unknown;
 }
@@ -207,6 +209,8 @@ function radialLayout(
 
 // ─── Custom Node Component ───────────────────────────────
 
+const HANDLE_STYLE = { opacity: 0, width: 6, height: 6 };
+
 const GraphNode = memo(({ data }: NodeProps<Node<GraphNodeData>>) => {
   const d = data as GraphNodeData;
   const nodeStyle: React.CSSProperties = {
@@ -227,8 +231,14 @@ const GraphNode = memo(({ data }: NodeProps<Node<GraphNodeData>>) => {
 
   return (
     <>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0, width: 8, height: 8 }} />
-      <Handle type="target" position={Position.Left} style={{ opacity: 0, width: 8, height: 8 }} id="tl" />
+      <Handle type="target" position={Position.Top} id="t-in" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Top} id="t-out" style={HANDLE_STYLE} />
+      <Handle type="target" position={Position.Right} id="r-in" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Right} id="r-out" style={HANDLE_STYLE} />
+      <Handle type="target" position={Position.Bottom} id="b-in" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Bottom} id="b-out" style={HANDLE_STYLE} />
+      <Handle type="target" position={Position.Left} id="l-in" style={HANDLE_STYLE} />
+      <Handle type="source" position={Position.Left} id="l-out" style={HANDLE_STYLE} />
       <div style={nodeStyle}>
         <div style={{
           fontSize: 9, lineHeight: '14px', color: d.typeColor, fontWeight: 600,
@@ -250,7 +260,7 @@ const GraphNode = memo(({ data }: NodeProps<Node<GraphNodeData>>) => {
           </div>
         )}
         {!d.loading && d.hiddenCount > 0 && (
-          <Tooltip title={`${d.hiddenCount} hidden connections`}>
+          <Tooltip title={d.hiddenLabel}>
             <div style={{
               position: 'absolute', top: -8, right: -8,
               background: d.typeColor, color: '#fff', borderRadius: 10,
@@ -272,8 +282,6 @@ const GraphNode = memo(({ data }: NodeProps<Node<GraphNodeData>>) => {
           </div>
         )}
       </div>
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, width: 8, height: 8 }} />
-      <Handle type="source" position={Position.Right} style={{ opacity: 0, width: 8, height: 8 }} id="sr" />
     </>
   );
 });
@@ -292,6 +300,7 @@ function GraphInner({
   height = 600,
   onNodeSelect,
 }: Props) {
+  const { t } = useI18n();
   const typeMap = useRef(new Map<string, ObjectType>());
   useEffect(() => {
     typeMap.current = new Map(objectTypes.map((t) => [t.id, t]));
@@ -382,6 +391,7 @@ function GraphInner({
         hiddenCount = cached.neighbors.length
           - cached.neighbors.filter((n) => visibleSet.has(n.id)).length;
       }
+      const effectiveHidden = isExpanded ? 0 : hiddenCount;
       const nodeData = {
         id,
         displayName: nd.displayName,
@@ -390,7 +400,8 @@ function GraphInner({
         typeColor: getColor(nd.objectTypeId),
         expanded: isExpanded,
         loading: false,
-        hiddenCount: isExpanded ? 0 : hiddenCount,
+        hiddenCount: effectiveHidden,
+        hiddenLabel: t('explorer.graphHiddenConnections', { count: effectiveHidden }),
         isRoot: id === rootObjectId,
       } satisfies GraphNodeData;
       const matches = nodeMatchesSearch(
@@ -412,22 +423,47 @@ function GraphInner({
       };
     });
 
+    const NODE_W = 130, NODE_H = 50;
+    const pickHandles = (srcId: string, tgtId: string): { sourceHandle: string; targetHandle: string } => {
+      const sp = positions.get(srcId) || { x: 0, y: 0 };
+      const tp = positions.get(tgtId) || { x: 0, y: 0 };
+      const dx = (tp.x + NODE_W / 2) - (sp.x + NODE_W / 2);
+      const dy = (tp.y + NODE_H / 2) - (sp.y + NODE_H / 2);
+      const angle = Math.atan2(dy, dx);
+      let srcSide: string, tgtSide: string;
+      if (angle >= -Math.PI / 4 && angle < Math.PI / 4) {
+        srcSide = 'r'; tgtSide = 'l';
+      } else if (angle >= Math.PI / 4 && angle < 3 * Math.PI / 4) {
+        srcSide = 'b'; tgtSide = 't';
+      } else if (angle >= -3 * Math.PI / 4 && angle < -Math.PI / 4) {
+        srcSide = 't'; tgtSide = 'b';
+      } else {
+        srcSide = 'l'; tgtSide = 'r';
+      }
+      return { sourceHandle: `${srcSide}-out`, targetHandle: `${tgtSide}-in` };
+    };
+
     const rfEdges: Edge[] = filteredEdges.map((e) => {
       const lt = ltMap.current.get(e.linkTypeId);
-      const color = getColor(e.linkTypeId) || 'var(--border)';
+      const srcNode = visNodeMap.current.get(e.source);
+      const color = srcNode ? getColor(srcNode.objectTypeId) : 'var(--border)';
+      const handles = pickHandles(e.source, e.target);
       return {
         id: e.key,
         source: e.source,
         target: e.target,
+        sourceHandle: handles.sourceHandle,
+        targetHandle: handles.targetHandle,
         type: 'smoothstep',
         pathOptions: { borderRadius: 20 },
         label: lt?.display_name,
-        labelStyle: { fontSize: 9, fill: 'var(--text-tertiary)', fontWeight: 500 },
+        labelStyle: { fontSize: 9, fill: 'var(--text-tertiary)', fontWeight: 500, cursor: 'pointer' },
         labelBgStyle: { fill: 'var(--bg-surface)', fillOpacity: 0.9 },
         labelBgPadding: [4, 2] as [number, number],
         labelBgBorderRadius: 3,
-        style: { stroke: color, strokeWidth: 1.5, opacity: 0.6 },
+        style: { stroke: color, strokeWidth: 1.5, opacity: 0.6, cursor: 'pointer' },
         markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--text-tertiary)', width: 12, height: 12 },
+        interactionWidth: 20,
       };
     });
 
@@ -628,7 +664,7 @@ function GraphInner({
       <div className="graph-search-overlay">
         <Input
           prefix={<SearchOutlined />}
-          placeholder="Search nodes..."
+          placeholder={t('explorer.graphSearchPlaceholder')}
           allowClear
           size="small"
           value={searchQuery}
@@ -684,27 +720,27 @@ function GraphInner({
           })}
         </div>
         <Space size={4}>
-          <Tooltip title="Expand all visible nodes">
+          <Tooltip title={t('explorer.graphExpandAll')}>
             <button onClick={expandAll} style={{
               background: 'var(--bg-body)', border: '1px solid var(--border)', borderRadius: 4,
               padding: '2px 8px', cursor: 'pointer', fontSize: 11, color: 'var(--text-secondary)',
               display: 'flex', alignItems: 'center', gap: 4,
             }}>
-              <ExpandOutlined style={{ fontSize: 10 }} /> Expand
+              <ExpandOutlined style={{ fontSize: 10 }} /> {t('explorer.graphExpand')}
             </button>
           </Tooltip>
-          <Tooltip title="Collapse all (keep root)">
+          <Tooltip title={t('explorer.graphCollapseAll')}>
             <button onClick={collapseAll} style={{
               background: 'var(--bg-body)', border: '1px solid var(--border)', borderRadius: 4,
               padding: '2px 8px', cursor: 'pointer', fontSize: 11, color: 'var(--text-secondary)',
               display: 'flex', alignItems: 'center', gap: 4,
             }}>
-              <CompressOutlined style={{ fontSize: 10 }} /> Collapse
+              <CompressOutlined style={{ fontSize: 10 }} /> {t('explorer.graphCollapse')}
             </button>
           </Tooltip>
         </Space>
         <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-tertiary)', lineHeight: '14px' }}>
-          Double-click: expand / collapse
+          {t('explorer.graphDoubleClickHint')}
         </div>
       </div>
 
@@ -758,11 +794,11 @@ function GraphInner({
           >
             {(nodes.find((n) => n.id === contextMenu.nodeId)?.data as GraphNodeData)?.expanded ? (
               <>
-                <CompressOutlined /> Collapse
+                <CompressOutlined /> {t('explorer.graphCollapse')}
               </>
             ) : (
               <>
-                <ExpandOutlined /> Expand
+                <ExpandOutlined /> {t('explorer.graphExpand')}
               </>
             )}
           </div>
@@ -773,7 +809,7 @@ function GraphInner({
               setContextMenu(null);
             }}
           >
-            <DatabaseOutlined /> View Details
+            <DatabaseOutlined /> {t('explorer.graphViewDetails')}
           </div>
           <div
             className="graph-context-menu-item"
@@ -782,7 +818,7 @@ function GraphInner({
               setContextMenu(null);
             }}
           >
-            <AimOutlined /> Focus
+            <AimOutlined /> {t('explorer.graphFocus')}
           </div>
         </div>
       )}

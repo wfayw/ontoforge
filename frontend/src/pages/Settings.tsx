@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Card, Descriptions, Tag, Tabs, Table, Select, message, Space, Switch, Button, Input, Tooltip } from 'antd';
-import { UserOutlined, AuditOutlined, SettingOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { Card, Descriptions, Tag, Tabs, Table, Select, message, Space, Switch, Button, Input, Tooltip, Modal, Form } from 'antd';
+import { UserOutlined, AuditOutlined, SettingOutlined, ReloadOutlined, SearchOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
 import { useAuthStore } from '@/stores/authStore';
 import { useI18n } from '@/i18n';
 import { usePermission } from '@/hooks/usePermission';
@@ -23,6 +23,8 @@ function UserManagement() {
   const { user: currentUser } = useAuthStore();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createForm] = Form.useForm();
 
   const loadUsers = async () => {
     setLoading(true);
@@ -56,6 +58,16 @@ function UserManagement() {
     }
   };
 
+  const createUser = async (values: Record<string, unknown>) => {
+    try {
+      await authApi.register(values as { username: string; email: string; password: string });
+      message.success(t('settings.userCreated'));
+      setCreateOpen(false);
+      createForm.resetFields();
+      loadUsers();
+    } catch { message.error(t('settings.userCreateFailed')); }
+  };
+
   const columns = [
     { title: t('settings.username'), dataIndex: 'username', key: 'username', width: 140 },
     { title: t('settings.email'), dataIndex: 'email', key: 'email', width: 200 },
@@ -85,10 +97,11 @@ function UserManagement() {
   ];
 
   return (
+    <>
     <Card
       title={<span style={{ color: 'var(--text-primary)' }}><UserOutlined style={{ marginRight: 8 }} />{t('settings.userManagement')}</span>}
       style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)', marginBottom: 16 }}
-      extra={<Button size="small" icon={<ReloadOutlined />} onClick={loadUsers}>{t('settings.refresh')}</Button>}
+      extra={<Space><Button size="small" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>{t('settings.createUser')}</Button><Button size="small" icon={<ReloadOutlined />} onClick={loadUsers}>{t('settings.refresh')}</Button></Space>}
     >
       <Table
         dataSource={users} columns={columns} rowKey="id" loading={loading}
@@ -96,6 +109,14 @@ function UserManagement() {
         style={{ background: 'transparent' }}
       />
     </Card>
+    <Modal title={t('settings.createUser')} open={createOpen} onCancel={() => setCreateOpen(false)} onOk={() => createForm.submit()} okText={t('common.create')}>
+      <Form form={createForm} onFinish={createUser} layout="vertical">
+        <Form.Item name="username" label={t('settings.username')} rules={[{ required: true }]}><Input /></Form.Item>
+        <Form.Item name="email" label={t('settings.email')} rules={[{ required: true, type: 'email' }]}><Input /></Form.Item>
+        <Form.Item name="password" label={t('login.password')} rules={[{ required: true, min: 6 }]}><Input.Password /></Form.Item>
+      </Form>
+    </Modal>
+    </>
   );
 }
 
@@ -208,6 +229,22 @@ export default function SettingsPage() {
   const { user } = useAuthStore();
   const { t } = useI18n();
   const { isAdmin } = usePermission();
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [profileForm] = Form.useForm();
+
+  const openEditProfile = () => {
+    profileForm.setFieldsValue({ display_name: user?.display_name || '' });
+    setEditProfileOpen(true);
+  };
+
+  const saveProfile = async (values: Record<string, unknown>) => {
+    if (!user) return;
+    try {
+      await authApi.updateUser(user.id, { display_name: values.display_name as string });
+      message.success(t('settings.profileUpdated'));
+      setEditProfileOpen(false);
+    } catch { message.error(t('settings.profileUpdateFailed')); }
+  };
 
   const items = [
     {
@@ -215,7 +252,9 @@ export default function SettingsPage() {
       label: <span><SettingOutlined style={{ marginRight: 4 }} />{t('settings.userProfile')}</span>,
       children: (
         <>
-          <Card title={<span style={{ color: 'var(--text-primary)' }}>{t('settings.userProfile')}</span>} style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)', marginBottom: 16 }}>
+          <Card title={<span style={{ color: 'var(--text-primary)' }}>{t('settings.userProfile')}</span>} style={{ background: 'var(--bg-surface)', border: '1px solid var(--card-border)', marginBottom: 16 }}
+            extra={<Button size="small" icon={<EditOutlined />} onClick={openEditProfile}>{t('settings.editProfile')}</Button>}
+          >
             <Descriptions column={2} bordered size="small">
               <Descriptions.Item label={t('settings.username')}>{user?.username}</Descriptions.Item>
               <Descriptions.Item label={t('settings.email')}>{user?.email}</Descriptions.Item>
@@ -230,7 +269,7 @@ export default function SettingsPage() {
               <Descriptions.Item label={t('settings.backend')}>FastAPI + SQLite</Descriptions.Item>
               <Descriptions.Item label={t('settings.frontend')}>React + Ant Design</Descriptions.Item>
               <Descriptions.Item label={t('settings.aiIntegration')}>OpenAI-compatible API</Descriptions.Item>
-              <Descriptions.Item label={t('settings.license')}>Open Source</Descriptions.Item>
+              <Descriptions.Item label={t('settings.license')}>Enterprise</Descriptions.Item>
             </Descriptions>
           </Card>
         </>
@@ -252,6 +291,13 @@ export default function SettingsPage() {
     <div>
       <PageHeader title={t('settings.title')} subtitle={t('settings.subtitle')} />
       <Tabs items={items} style={{ marginTop: -8 }} />
+      <Modal title={t('settings.editProfile')} open={editProfileOpen} onCancel={() => setEditProfileOpen(false)} onOk={() => profileForm.submit()} okText={t('common.save')}>
+        <Form form={profileForm} onFinish={saveProfile} layout="vertical">
+          <Form.Item name="display_name" label={t('settings.displayName')}>
+            <Input />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   );
 }
