@@ -4,6 +4,8 @@
 set -e
 BASE="${ONTOFORGE_API:-http://localhost:8000/api/v1}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONUTF8=1
+export PYTHONIOENCODING="utf-8"
 
 echo "============================================="
 echo "  OntoForge 供应链管理演示 — 自动化部署"
@@ -351,107 +353,144 @@ LT_PO_DLV=$(get_lt po_delivery)
 LT_SUP_WH=$(get_lt supplier_delivers_to_warehouse)
 LT_WH_PART=$(get_lt warehouse_stores_part)
 
-python3 -c "
-import json, subprocess, sys
+DEMO_BASE="$BASE" \
+DEMO_TOKEN="$TOKEN" \
+SUP_ID="$SUP_ID" \
+PART_ID="$PART_ID" \
+PLANT_ID="$PLANT_ID" \
+WH_ID="$WH_ID" \
+PO_ID="$PO_ID" \
+QC_ID="$QC_ID" \
+DLV_ID="$DLV_ID" \
+LT_SUP_PART="$LT_SUP_PART" \
+LT_PART_PO="$LT_PART_PO" \
+LT_PO_PLANT="$LT_PO_PLANT" \
+LT_PO_QC="$LT_PO_QC" \
+LT_PO_DLV="$LT_PO_DLV" \
+LT_PLANT_WH="$LT_PLANT_WH" \
+LT_SUP_WH="$LT_SUP_WH" \
+LT_WH_PART="$LT_WH_PART" \
+python3 - <<'PY' | while IFS= read -r line; do
+import json
+import os
+import urllib.request
 
-def api_get(path):
-    r = subprocess.run(['curl', '-sf', '$BASE/' + path, '-H', '$AUTH'], capture_output=True, text=True)
-    return json.loads(r.stdout)
 
-all_objs = api_get('instances/objects?page_size=500')['items']
+BASE = os.environ["DEMO_BASE"]
+TOKEN = os.environ["DEMO_TOKEN"]
 
-def by_prop(type_id, prop):
-    return {o['properties'].get(prop): o['id'] for o in all_objs if o['object_type_id'] == type_id}
 
-sup_by_code = by_prop('$SUP_ID', 'supplier_code')
-part_by_num = by_prop('$PART_ID', 'part_number')
-plant_by_code = by_prop('$PLANT_ID', 'plant_code')
-wh_by_code = by_prop('$WH_ID', 'warehouse_code')
-po_by_num = by_prop('$PO_ID', 'po_number')
-qc_by_id = by_prop('$QC_ID', 'inspection_id')
-dlv_by_id = by_prop('$DLV_ID', 'delivery_id')
+def api_get(path: str):
+    request = urllib.request.Request(
+        f"{BASE}/{path}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
+
+
+all_objs = api_get("instances/objects?page_size=500")["items"]
+
+
+def env(name: str) -> str:
+    return os.environ[name]
+
+
+def by_prop(type_id: str, prop: str):
+    return {o["properties"].get(prop): o["id"] for o in all_objs if o["object_type_id"] == type_id}
+
+
+sup_by_code = by_prop(env("SUP_ID"), "supplier_code")
+part_by_num = by_prop(env("PART_ID"), "part_number")
+plant_by_code = by_prop(env("PLANT_ID"), "plant_code")
+wh_by_code = by_prop(env("WH_ID"), "warehouse_code")
+po_by_num = by_prop(env("PO_ID"), "po_number")
 
 links = set()
 
-# supplier -> part
 for o in all_objs:
-    if o['object_type_id'] == '$PART_ID':
-        sc = o['properties'].get('supplier_code')
-        if sc and sc in sup_by_code:
-            links.add(('$LT_SUP_PART', sup_by_code[sc], o['id']))
+    if o["object_type_id"] == env("PART_ID"):
+        supplier_code = o["properties"].get("supplier_code")
+        if supplier_code and supplier_code in sup_by_code:
+            links.add((env("LT_SUP_PART"), sup_by_code[supplier_code], o["id"]))
 
-# part -> po
 for o in all_objs:
-    if o['object_type_id'] == '$PO_ID':
-        pn = o['properties'].get('part_number')
-        if pn and pn in part_by_num:
-            links.add(('$LT_PART_PO', part_by_num[pn], o['id']))
+    if o["object_type_id"] == env("PO_ID"):
+        part_number = o["properties"].get("part_number")
+        if part_number and part_number in part_by_num:
+            links.add((env("LT_PART_PO"), part_by_num[part_number], o["id"]))
 
-# po -> plant
 for o in all_objs:
-    if o['object_type_id'] == '$PO_ID':
-        pc = o['properties'].get('plant_code')
-        if pc and pc in plant_by_code:
-            links.add(('$LT_PO_PLANT', o['id'], plant_by_code[pc]))
+    if o["object_type_id"] == env("PO_ID"):
+        plant_code = o["properties"].get("plant_code")
+        if plant_code and plant_code in plant_by_code:
+            links.add((env("LT_PO_PLANT"), o["id"], plant_by_code[plant_code]))
 
-# po -> qc
 for o in all_objs:
-    if o['object_type_id'] == '$QC_ID':
-        pn = o['properties'].get('po_number')
-        if pn and pn in po_by_num:
-            links.add(('$LT_PO_QC', po_by_num[pn], o['id']))
+    if o["object_type_id"] == env("QC_ID"):
+        po_number = o["properties"].get("po_number")
+        if po_number and po_number in po_by_num:
+            links.add((env("LT_PO_QC"), po_by_num[po_number], o["id"]))
 
-# po -> delivery
 for o in all_objs:
-    if o['object_type_id'] == '$DLV_ID':
-        pn = o['properties'].get('po_number')
-        if pn and pn in po_by_num:
-            links.add(('$LT_PO_DLV', po_by_num[pn], o['id']))
+    if o["object_type_id"] == env("DLV_ID"):
+        po_number = o["properties"].get("po_number")
+        if po_number and po_number in po_by_num:
+            links.add((env("LT_PO_DLV"), po_by_num[po_number], o["id"]))
 
-# plant -> warehouse (mapping by city prefix)
 plant_wh_map = {
-    'PLT-SH': 'WH-SH01', 'PLT-CQ': 'WH-CQ01', 'PLT-CC': 'WH-CC01',
-    'PLT-GZ': 'WH-GZ01', 'PLT-CD': 'WH-SH01', 'PLT-WH': 'WH-CQ01',
-    'PLT-TH': 'WH-TH01', 'PLT-DE': 'WH-DE01',
+    "PLT-SH": "WH-SH01",
+    "PLT-CQ": "WH-CQ01",
+    "PLT-CC": "WH-CC01",
+    "PLT-GZ": "WH-GZ01",
+    "PLT-CD": "WH-SH01",
+    "PLT-WH": "WH-CQ01",
+    "PLT-TH": "WH-TH01",
+    "PLT-DE": "WH-DE01",
 }
-for pc, wc in plant_wh_map.items():
-    if pc in plant_by_code and wc in wh_by_code:
-        links.add(('$LT_PLANT_WH', plant_by_code[pc], wh_by_code[wc]))
+for plant_code, warehouse_code in plant_wh_map.items():
+    if plant_code in plant_by_code and warehouse_code in wh_by_code:
+        links.add((env("LT_PLANT_WH"), plant_by_code[plant_code], wh_by_code[warehouse_code]))
 
-# supplier -> warehouse (Chinese suppliers -> Chinese warehouses, etc.)
-cn_whs = ['WH-SH01', 'WH-CQ01', 'WH-CC01', 'WH-GZ01']
+cn_whs = ["WH-SH01", "WH-CQ01", "WH-CC01", "WH-GZ01"]
 for o in all_objs:
-    if o['object_type_id'] == '$SUP_ID':
-        sc = o['properties'].get('supplier_code')
-        country = o['properties'].get('country', '')
-        if sc:
-            if country == '中国':
-                for wc in cn_whs[:2]:
-                    if wc in wh_by_code: links.add(('$LT_SUP_WH', o['id'], wh_by_code[wc]))
-            elif country in ('德国', '法国', '瑞典', '爱尔兰'):
-                if 'WH-DE01' in wh_by_code: links.add(('$LT_SUP_WH', o['id'], wh_by_code['WH-DE01']))
-            elif country == '泰国':
-                if 'WH-TH01' in wh_by_code: links.add(('$LT_SUP_WH', o['id'], wh_by_code['WH-TH01']))
-            else:
-                if 'WH-SH01' in wh_by_code: links.add(('$LT_SUP_WH', o['id'], wh_by_code['WH-SH01']))
+    if o["object_type_id"] == env("SUP_ID"):
+        country = o["properties"].get("country", "")
+        if country == "中国":
+            for warehouse_code in cn_whs[:2]:
+                if warehouse_code in wh_by_code:
+                    links.add((env("LT_SUP_WH"), o["id"], wh_by_code[warehouse_code]))
+        elif country in ("德国", "法国", "瑞典", "爱尔兰"):
+            if "WH-DE01" in wh_by_code:
+                links.add((env("LT_SUP_WH"), o["id"], wh_by_code["WH-DE01"]))
+        elif country == "泰国":
+            if "WH-TH01" in wh_by_code:
+                links.add((env("LT_SUP_WH"), o["id"], wh_by_code["WH-TH01"]))
+        elif "WH-SH01" in wh_by_code:
+            links.add((env("LT_SUP_WH"), o["id"], wh_by_code["WH-SH01"]))
 
-# warehouse -> part (parts stored in warehouses near their plants)
+suppliers = {
+    o["properties"].get("supplier_code"): o
+    for o in all_objs
+    if o["object_type_id"] == env("SUP_ID")
+}
 for o in all_objs:
-    if o['object_type_id'] == '$PART_ID':
-        sc = o['properties'].get('supplier_code')
-        if sc:
-            sup_obj = [s for s in all_objs if s['object_type_id']=='$SUP_ID' and s['properties'].get('supplier_code')==sc]
-            if sup_obj:
-                country = sup_obj[0]['properties'].get('country','')
-                if country == '中国':
-                    for wc in cn_whs[:2]:
-                        if wc in wh_by_code: links.add(('$LT_WH_PART', wh_by_code[wc], o['id']))
-                elif country in ('德国','法国','瑞典','爱尔兰'):
-                    if 'WH-DE01' in wh_by_code: links.add(('$LT_WH_PART', wh_by_code['WH-DE01'], o['id']))
+    if o["object_type_id"] == env("PART_ID"):
+        supplier_code = o["properties"].get("supplier_code")
+        supplier = suppliers.get(supplier_code)
+        if not supplier:
+            continue
+        country = supplier["properties"].get("country", "")
+        if country == "中国":
+            for warehouse_code in cn_whs[:2]:
+                if warehouse_code in wh_by_code:
+                    links.add((env("LT_WH_PART"), wh_by_code[warehouse_code], o["id"]))
+        elif country in ("德国", "法国", "瑞典", "爱尔兰") and "WH-DE01" in wh_by_code:
+            links.add((env("LT_WH_PART"), wh_by_code["WH-DE01"], o["id"]))
 
-for lt, src, tgt in links:
-    print(json.dumps({'link_type_id': lt, 'source_id': src, 'target_id': tgt}))
-" | while IFS= read -r line; do
+for link_type_id, source_id, target_id in links:
+    print(json.dumps({"link_type_id": link_type_id, "source_id": source_id, "target_id": target_id}))
+PY
   api_json "instances/links" -X POST -d "$line" >/dev/null 2>&1 || true
 done
 
@@ -743,25 +782,46 @@ for did in $DOC_IDS; do
   api "documents/$did" -X DELETE >/dev/null 2>&1 || true
 done
 
-api_json "documents/" -X POST -d '{
+create_document_from_file() {
+  local payload_file=$1
+  curl -sf -X POST "$BASE/documents/" \
+    -H "$AUTH" \
+    -H "Content-Type: application/json" \
+    --data-binary "@$payload_file" >/dev/null
+  rm -f "$payload_file"
+}
+
+DOC1_PAYLOAD=$(mktemp)
+cat > "$DOC1_PAYLOAD" <<'EOF'
+{
   "name": "供应链管理手册 V2.0",
   "description": "汽车零部件供应链管理标准操作流程 — 覆盖采购、质量、物流、风控",
-  "content": "第一章 供应商管理\n\n1.1 供应商准入标准\n新供应商需满足以下条件：ISO 9001 / IATF 16949 认证、年产能不低于10万件、交货准时率>95%、质量合格率>98%。供应商评级分为 A（优秀，份额可增至40%）、B（良好，份额20-30%）、C（观察期，限制份额<10%）三级。C级供应商连续两季度未达标将被取消资格。\n\n1.2 供应商绩效评估\n每季度评估维度：交货准时率（权重30%）、质量合格率（权重35%）、价格竞争力（权重20%）、技术响应速度（权重15%）。评分 = Σ(维度分×权重)。评级结果直接影响下一季度订单分配比例。\n\n1.3 供应商风险管理\n高风险预警信号：交货延迟率>15%、质检不合格率>5%、财务评级下调、自然灾害影响产区。发现预警信号后48小时内启动应急评估，72小时内出具替代方案。\n\n第二章 采购订单管理\n\n2.1 采购审批流程\n需求确认 → 供应商选择(评级优先) → 价格谈判(不超过基准价110%) → 订单创建 → 三级审批 → 订单发出 → 到货验收 → 质量检测 → 入库。审批规则：<50万部门经理审批，50-200万总监审批，>200万副总裁审批。\n\n2.2 订单状态机\n已下单 → 已审批 → 生产中 → 已发货 → 已到货 → 已验收。异常状态：延迟（超期5天）、已驳回（审批不通过）。延迟超过10天自动升级至供应链总监。\n\n2.3 紧急采购\n库存低于安全线或产线停工风险时触发紧急采购。紧急采购允许跳过部分审批环节，但需72小时内补齐审批手续。紧急采购成本上限为基准价的130%。\n\n第三章 质量管控\n\n3.1 来料检测标准 (IQC)\n所有来料必须抽检，抽检比例：A级供应商3%、B级供应商5%、C级供应商10%。检测项目：外观检查、尺寸测量（CMM三坐标）、材料成分分析（光谱仪）、功能测试。缺陷数≥3件/批判定为不合格。轻微缺陷可降级使用但需记录。\n\n3.2 质量追溯\n发现质量问题时，通过本体图谱追溯完整链路：质检记录 → 采购订单 → 零件 → 供应商。24小时内完成根因分析，48小时内出具8D报告。同一供应商同类问题连续发生3次，启动供应商降级评审。\n\n第四章 物流管理\n\n4.1 物流追踪\n所有采购订单必须配套物流追踪单。国内订单使用顺丰/德邦/京东物流，国际订单使用马士基/DHL/FedEx/DB Schenker。物流状态：已发出 → 运输中 → 清关中(国际) → 已到达。\n\n4.2 物流异常处理\n预计到达时间(ETA)超期3天标记为预警，超期5天标记为异常。异常物流自动通知采购经理和物流协调员，同时触发备选方案评估。\n\n4.3 仓储管理\n6个仓库分布在中国(4个)、德国(1个)、泰国(1个)。仓库容量使用率超过85%触发扩容预警。零件存储遵循FIFO原则，保质期零件需标注有效期。"
-}' >/dev/null
+  "content": "第一章 供应商管理\n\n1.1 供应商准入标准\n新供应商需满足以下条件：ISO 9001 / IATF 16949 认证、年产能不低于10万件、交货准时率>95%、质量合格率>98%。供应商评级分为 A（优秀，份额可增至40%）、B（良好，份额20-30%）、C（观察期，限制份额<10%）三级。C级供应商连续两季度未达标将被取消资格。\n\n1.2 供应商绩效评估\n每季度评估维度：交货准时率（权重30%）、质量合格率（权重35%）、价格竞争力（权重20%）、技术响应速度（权重15%）。评分 = Σ(维度分×权重)。评级结果直接影响下一季度订单分配比例。\n\n1.3 供应商风险管理\n高风险预警信号：交货延迟率>15%、质检不合格率>5%、财务评级下调、自然灾害影响产区。发现预警信号后48小时内启动应急评估，72小时内出具替代方案。\n\n第二章 采购订单管理\n\n2.1 采购审批流程\n需求确认 → 供应商选择(评级优先) → 价格谈判(不超过基准价110%) → 订单创建 → 三级审批 → 订单发出 → 到货验收 → 质量检测 → 入库。审批规则：<50万部门经理审批，50-200万总监审批，>200万副总裁审批。\n\n2.2 订单状态机\n已下单 → 已审批 → 生产中 → 已发货 → 已到货 → 已验收。异常状态：延迟（超期5天）、已驳回（审批不通过）。延迟超过10天自动升级至供应链总监。\n\n2.3 紧急采购\n库存低于安全线或产线停工风险时触发紧急采购。紧急采购允许跳过部分审批环节，但需72小时内补齐审批手续。紧急采购成本上限为基准价的130%。\n\n第三章 质量管控\n\n3.1 来料检测标准 (IQC)\n所有来料必须抽检，抽检比例：A级供应商3%、B级供应商5%、C级供应商10%。检测项目：外观检查、尺寸测量（CMM三坐标）、材料成分分析（光谱仪）、功能测试。缺陷数≥3件/批判定为不合格。轻微缺陷可降级使用但需记录。\n\n3.2 质量追溯\n发现质量问题时，通过本体图谱追溯完整链路：质检记录 → 采购订单 → 零件 → 供应商。24小时内完成根因分析，48小时内出具8D报告。同一供应商同类问题连续发生3次，启动供应商降级评审。\n\n第四章 物流管理\n\n4.1 物流追踪\n所有采购订单必须配套物流追踪单。国内订单使用顺丰/德邦/京东物流，国际订单使用马士基/DHL/FedEx/DB Schenker。物流状态：已发出 → 运输中 → 清关中(国际) → 已到达。\n\n4.2 物流异常处理\n预计到达时间(ETA)超期3天标记为预警，超期5天标记为异常。异常物流自动通知采购经理和物流协调员，同时触发备选方案评估。\n\n4.3 仓储管理\n6个仓库分布在中国(4个)、德国(1个)、泰国(1个)。仓库容量使用率超过85%触发扩容预警。零件存储遵循FIFO原则，保质期零件需标注有效期."
+}
+EOF
+create_document_from_file "$DOC1_PAYLOAD"
 echo "    文档1: 供应链管理手册 V2.0"
 
-api_json "documents/" -X POST -d '{
+DOC2_PAYLOAD=$(mktemp)
+cat > "$DOC2_PAYLOAD" <<'EOF'
+{
   "name": "设备维修指南",
   "description": "工厂设备日常维护和故障排除手册",
   "content": "第一章 设备分类与维护周期\n\n1.1 关键设备分类\nA类设备（核心产线）：CNC加工中心、冲压机、注塑机、焊接机器人。维护周期：每日点检、每周保养、每月深度维护。\nB类设备（辅助设备）：输送带、包装机、检测仪器、AGV。维护周期：每周点检、每月保养。\n\n1.2 预防性维护\nCNC加工中心：每2000小时更换主轴轴承，每500小时更换切削液，每100小时检查导轨润滑。冲压机：每1000小时检查模具磨损，每200小时检查液压系统。焊接机器人：每500小时校准焊枪位置，每1000小时更换送丝机构。\n\n第二章 常见故障排除\n\n2.1 CNC加工中心\n故障码E001：主轴过热→检查冷却系统→清洁散热片→检查冷却液液位。\n故障码E002：伺服轴报警→检查编码器连接→确认伺服参数。\n故障码E003：刀具破损→更换刀具→重新对刀→检查切削参数。\n\n2.2 冲压机\n故障码P001：液压压力不足→检查液压油量→检查滤芯→确认溢流阀设定。\n故障码P002：送料不准确→检查定位传感器→校准步进量。\n\n2.3 焊接机器人\n故障码W001：焊接飞溅过大→检查气体流量→调整电流参数→清洁喷嘴。\n故障码W002：焊缝偏移→重新示教路径→检查工件定位夹具。"
-}' >/dev/null
+}
+EOF
+create_document_from_file "$DOC2_PAYLOAD"
 echo "    文档2: 设备维修指南"
 
-api_json "documents/" -X POST -d '{
+DOC3_PAYLOAD=$(mktemp)
+cat > "$DOC3_PAYLOAD" <<'EOF'
+{
   "name": "供应商风险评估报告 2025-Q4",
   "description": "2025年第四季度供应商风险评估及应对建议",
   "content": "供应商风险评估报告 — 2025年第四季度\n\n一、评估概要\n本季度对20家核心供应商进行了全面风险评估，覆盖6个国家。整体风险水平较Q3略有上升，主要受地缘政治和原材料价格波动影响。\n\n二、高风险供应商\n\n2.1 SUP-015 泰源精密制造（东莞）— 评级 C\n风险等级：高\n问题描述：\n- 交货准时率：78%（行业基准95%）\n- 质检不合格率：18%（标准<5%）\n- 近3个月缺陷数呈上升趋势（月均缺陷从3件升至8件）\n- 主要问题零件：PRT-10025（铸铝副车架）和PRT-10030（冲压A柱加强板）\n建议措施：\n1. 立即降低订单份额至当前的50%\n2. 启动备选供应商评估（推荐SUP-007中信戴卡）\n3. 增加来料检测抽检比例至15%\n4. 限期3个月改善，未达标则取消合格供应商资格\n\n2.2 SUP-006 Aisin Seiki（日本）— 评级 B\n风险等级：中\n问题描述：\n- 自动变速箱阀体(PRT-10006)交货周期从35天延长至42天\n- 日元汇率波动导致成本上升约8%\n建议措施：\n1. 协商锁定汇率条款\n2. 适度增加安全库存\n\n三、行业风险\n\n3.1 新能源零部件供应紧张\n锂电池(PRT-10013)和电驱动总成(PRT-10014)全球产能紧张，交货周期延长20%。建议与SUP-011(宁德时代)签订长期供应协议。\n\n3.2 欧洲物流成本上升\n经Hamburg中转仓(WH-DE01)的物流成本较去年同期上升15%。建议评估直送模式可行性。\n\n四、下季度行动计划\n1. 完成SUP-015替代方案（1月底前）\n2. 与SUP-011签订2026年电池供应框架协议\n3. 优化欧洲物流路线\n4. 新增韩国SUP-009 Hyundai Mobis的EPS电子助力泵供应评估"
-}' >/dev/null
+}
+EOF
+create_document_from_file "$DOC3_PAYLOAD"
 echo "    文档3: 供应商风险评估报告 2025-Q4"
 
 # ── 12. 验证数据 ──────────────────────────────────────
@@ -771,85 +831,107 @@ echo "  数据验证"
 echo "============================================="
 
 echo ""
-api "ontology/object-types" | python3 -c "
-import sys,json
-types = json.load(sys.stdin)
-print(f'本体对象类型: {len(types)} 种')
-for t in types:
-    print(f'  [{t[\"color\"]}] {t[\"display_name\"]} — {len(t[\"properties\"])} 属性')
-"
+DEMO_BASE="$BASE" DEMO_TOKEN="$TOKEN" PO_ID="$PO_ID" QC_ID="$QC_ID" DLV_ID="$DLV_ID" python3 - <<'PY'
+import json
+import os
+import urllib.request
 
-echo ""
-api "instances/objects?page_size=1" | python3 -c "
-import sys,json; print(f'对象实例总数: {json.load(sys.stdin)[\"total\"]}')
-"
 
-echo ""
-api "instances/links" | python3 -c "
-import sys,json; print(f'关联实例总数: {len(json.load(sys.stdin))}')
-"
+BASE = os.environ["DEMO_BASE"]
+TOKEN = os.environ["DEMO_TOKEN"]
+PO_ID = os.environ["PO_ID"]
+QC_ID = os.environ["QC_ID"]
+DLV_ID = os.environ["DLV_ID"]
 
-echo ""
-echo "操作类型:"
-api "ontology/action-types" | python3 -c "
-import sys,json
-for a in json.load(sys.stdin):
-    print(f'  ⚡ {a[\"display_name\"]} ({a[\"name\"]})')
-"
 
-echo ""
-echo "告警规则:"
-api "alerts/rules" | python3 -c "
-import sys,json
-for r in json.load(sys.stdin):
-    print(f'  🔔 {r[\"name\"]} ({r[\"severity\"]})')
-"
+def api_get(path: str):
+    request = urllib.request.Request(
+        f"{BASE}/{path}",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
 
-echo ""
-echo "聚合分析 — 按状态统计采购订单:"
-api_json "instances/objects/aggregate" -X POST \
-  -d "{\"object_type_id\":\"$PO_ID\",\"metric\":\"count\",\"group_by\":\"status\"}" \
-  | python3 -c "
-import sys,json
-data = json.load(sys.stdin)
-total = sum(r['value'] for r in data.get('results', []))
-for r in sorted(data.get('results', []), key=lambda x: x['value'], reverse=True):
-    pct = round(r['value'] / total * 100) if total else 0
-    print(f'  {r[\"key\"]}: {r[\"value\"]} 单 ({pct}%)')
-print(f'  合计: {total} 单')
-"
 
-echo ""
-echo "聚合分析 — 按供应商采购金额 TOP5:"
-api_json "instances/objects/aggregate" -X POST \
-  -d "{\"object_type_id\":\"$PO_ID\",\"metric\":\"sum\",\"property_name\":\"total_amount\",\"group_by\":\"supplier_code\"}" \
-  | python3 -c "
-import sys,json
-data = json.load(sys.stdin)
-results = sorted(data.get('results', []), key=lambda x: x['value'], reverse=True)[:5]
-for r in results:
-    print(f'  {r[\"key\"]}: ¥{r[\"value\"]:,.0f}')
-"
+def api_post(path: str, payload: dict):
+    request = urllib.request.Request(
+        f"{BASE}/{path}",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {TOKEN}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request) as response:
+        return json.load(response)
 
-echo ""
-echo "聚合分析 — 质检结果分布:"
-api_json "instances/objects/aggregate" -X POST \
-  -d "{\"object_type_id\":\"$QC_ID\",\"metric\":\"count\",\"group_by\":\"result\"}" \
-  | python3 -c "
-import sys,json
-for r in json.load(sys.stdin).get('results', []):
-    print(f'  {r[\"key\"]}: {r[\"value\"]} 批次')
-"
 
-echo ""
-echo "聚合分析 — 物流状态分布:"
-api_json "instances/objects/aggregate" -X POST \
-  -d "{\"object_type_id\":\"$DLV_ID\",\"metric\":\"count\",\"group_by\":\"status\"}" \
-  | python3 -c "
-import sys,json
-for r in json.load(sys.stdin).get('results', []):
-    print(f'  {r[\"key\"]}: {r[\"value\"]} 条')
-"
+types = api_get("ontology/object-types")
+print(f"本体对象类型: {len(types)} 种")
+for item in types:
+    print(f"  [{item['color']}] {item['display_name']} — {len(item['properties'])} 属性")
+
+print("")
+print(f"对象实例总数: {api_get('instances/objects?page_size=1')['total']}")
+
+print("")
+print(f"关联实例总数: {len(api_get('instances/links'))}")
+
+print("")
+print("操作类型:")
+for action in api_get("ontology/action-types"):
+    print(f"  ⚡ {action['display_name']} ({action['name']})")
+
+print("")
+print("告警规则:")
+for rule in api_get("alerts/rules"):
+    print(f"  🔔 {rule['name']} ({rule['severity']})")
+
+print("")
+print("聚合分析 — 按状态统计采购订单:")
+order_stats = api_post(
+    "instances/objects/aggregate",
+    {"object_type_id": PO_ID, "metric": "count", "group_by": "status"},
+)
+total_orders = sum(item["value"] for item in order_stats.get("results", []))
+for item in sorted(order_stats.get("results", []), key=lambda x: x["value"], reverse=True):
+    pct = round(item["value"] / total_orders * 100) if total_orders else 0
+    print(f"  {item['key']}: {item['value']} 单 ({pct}%)")
+print(f"  合计: {total_orders} 单")
+
+print("")
+print("聚合分析 — 按供应商采购金额 TOP5:")
+supplier_stats = api_post(
+    "instances/objects/aggregate",
+    {
+        "object_type_id": PO_ID,
+        "metric": "sum",
+        "property_name": "total_amount",
+        "group_by": "supplier_code",
+    },
+)
+for item in sorted(supplier_stats.get("results", []), key=lambda x: x["value"], reverse=True)[:5]:
+    print(f"  {item['key']}: ¥{item['value']:,.0f}")
+
+print("")
+print("聚合分析 — 质检结果分布:")
+quality_stats = api_post(
+    "instances/objects/aggregate",
+    {"object_type_id": QC_ID, "metric": "count", "group_by": "result"},
+)
+for item in quality_stats.get("results", []):
+    print(f"  {item['key']}: {item['value']} 批次")
+
+print("")
+print("聚合分析 — 物流状态分布:")
+delivery_stats = api_post(
+    "instances/objects/aggregate",
+    {"object_type_id": DLV_ID, "metric": "count", "group_by": "status"},
+)
+for item in delivery_stats.get("results", []):
+    print(f"  {item['key']}: {item['value']} 条")
+PY
 
 # RBAC 验证
 echo ""

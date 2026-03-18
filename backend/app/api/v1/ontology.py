@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
+from app.models.data_integration import Pipeline
 from app.models.user import User
 from app.models.ontology import ObjectType, PropertyDefinition, LinkType, ActionType, FunctionDef
 from app.schemas.ontology import (
@@ -81,6 +82,17 @@ async def delete_object_type(type_id: str, db: AsyncSession = Depends(get_db), u
     obj_type = result.scalar_one_or_none()
     if not obj_type:
         raise HTTPException(status_code=404, detail="Object type not found")
+
+    # Clean up dependent rows for existing deployments whose database schema
+    # does not yet enforce cascading behavior for ontology references.
+    await db.execute(
+        delete(LinkType).where(
+            or_(LinkType.source_type_id == type_id, LinkType.target_type_id == type_id)
+        )
+    )
+    await db.execute(delete(ActionType).where(ActionType.object_type_id == type_id))
+    await db.execute(delete(Pipeline).where(Pipeline.target_object_type_id == type_id))
+
     await create_audit_log(db, user, "delete", "object_type", type_id)
     await db.delete(obj_type)
 

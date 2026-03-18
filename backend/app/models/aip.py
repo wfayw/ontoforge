@@ -56,7 +56,7 @@ class Conversation(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
-    agent_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("ai_agents.id"), nullable=True)
+    agent_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("ai_agents.id", ondelete="SET NULL"), nullable=True)
     user_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     messages: Mapped[list] = mapped_column(JSON, default=list)

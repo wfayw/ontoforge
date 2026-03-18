@@ -2,7 +2,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -119,6 +119,15 @@ async def delete_agent(agent_id: str, db: AsyncSession = Depends(get_db), user: 
     agent = result.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Preserve conversation history when removing an agent from older deployments
+    # whose database schema does not null out agent references automatically.
+    await db.execute(
+        update(Conversation)
+        .where(Conversation.agent_id == agent_id)
+        .values(agent_id=None)
+    )
+
     await create_audit_log(db, user, "delete_agent", "ai_agent", agent_id, {"name": agent.name})
     await db.delete(agent)
 

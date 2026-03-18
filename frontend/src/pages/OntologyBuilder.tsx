@@ -386,6 +386,12 @@ export default function OntologyBuilder() {
   const deleteObjectType = async (id: string) => {
     try {
       await ontologyApi.deleteObjectType(id);
+      if (selectedType?.id === id) setSelectedType(null);
+      if (editingType?.id === id) {
+        setEditTypeModalOpen(false);
+        setEditingType(null);
+      }
+      setSelectedEdgeId(null);
       message.success(t('ontology.deleted'));
       fetchAll();
     } catch { message.error(t('ontology.deleteFailed')); }
