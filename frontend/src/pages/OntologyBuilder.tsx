@@ -63,6 +63,15 @@ const NODE_TYPES = { schemaNode: SchemaNode };
 
 const FIT_VIEW_OPTS = { padding: 0.15, maxZoom: 1.1, minZoom: 0.4 };
 
+function extractBackendDetail(error: unknown): string | undefined {
+  const maybe = error as { response?: { data?: { detail?: unknown } } };
+  const detail = maybe?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+  return undefined;
+}
+
 interface GraphCanvasProps {
   nodes: FlowNode[];
   edges: Edge[];
@@ -515,8 +524,8 @@ export default function OntologyBuilder() {
     try {
       const { data } = await ontologyApi.generateOntology(aiDescription);
       setAiPlan(data.plan);
-    } catch {
-      message.error(t('ontology.aiGenerateFailed'));
+    } catch (error) {
+      message.error(extractBackendDetail(error) || t('ontology.aiGenerateFailed'));
     } finally {
       setAiGenerating(false);
     }
@@ -534,8 +543,8 @@ export default function OntologyBuilder() {
       fetchAll();
       fetchActionTypes();
       fetchFunctions();
-    } catch {
-      message.error(t('ontology.aiGenerateFailed'));
+    } catch (error) {
+      message.error(extractBackendDetail(error) || t('ontology.aiGenerateFailed'));
     } finally {
       setAiApplying(false);
     }

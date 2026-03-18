@@ -16,19 +16,48 @@ def _timeout_seconds() -> float:
     return getattr(settings, "LLM_TIMEOUT", 120.0)
 
 
+async def _get_provider_by_id(db: AsyncSession, provider_id: str) -> Optional[LLMProvider]:
+    result = await db.execute(
+        select(LLMProvider).where(
+            LLMProvider.id == provider_id,
+            LLMProvider.is_active == True,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_first_active_provider(db: AsyncSession) -> Optional[LLMProvider]:
+    result = await db.execute(
+        select(LLMProvider)
+        .where(LLMProvider.is_active == True)
+        .order_by(LLMProvider.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_llm_client(db: AsyncSession, provider_id: Optional[str] = None) -> tuple[AsyncOpenAI, str]:
-    """Get an OpenAI-compatible async client for the given provider, or use defaults."""
+    """Get an OpenAI-compatible async client.
+
+    Priority:
+    1) Explicit provider_id
+    2) First active provider in DB
+    3) Environment defaults
+    """
     timeout = _timeout_seconds()
+    provider: Optional[LLMProvider] = None
     if provider_id:
-        result = await db.execute(select(LLMProvider).where(LLMProvider.id == provider_id))
-        provider = result.scalar_one_or_none()
-        if provider:
-            client = AsyncOpenAI(
-                api_key=decrypt_secret(provider.api_key_encrypted or "") or "sk-placeholder",
-                base_url=provider.base_url,
-                timeout=timeout,
-            )
-            return client, provider.default_model
+        provider = await _get_provider_by_id(db, provider_id)
+    if provider is None:
+        provider = await _get_first_active_provider(db)
+
+    if provider:
+        client = AsyncOpenAI(
+            api_key=decrypt_secret(provider.api_key_encrypted or "") or "sk-placeholder",
+            base_url=provider.base_url,
+            timeout=timeout,
+        )
+        return client, provider.default_model
 
     client = AsyncOpenAI(
         api_key=settings.OPENAI_API_KEY or "sk-placeholder",
