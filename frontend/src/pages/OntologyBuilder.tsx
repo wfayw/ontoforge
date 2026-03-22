@@ -18,7 +18,58 @@ interface SchemaNodeData {
   displayName: string;
   propertyCount: number;
   propertyNames: string[];
+  propertyLabel: string;
+  canDelete?: boolean;
+  deleteLabel?: string;
+  deleteConfirm?: string;
+  onDelete?: () => void;
   [key: string]: unknown;
+}
+
+interface AiPropertyDraft {
+  name: string;
+  display_name: string;
+  data_type: string;
+  description?: string;
+  required?: boolean;
+  indexed?: boolean;
+  order?: number;
+}
+
+interface AiObjectTypeDraft {
+  name: string;
+  display_name: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  primary_key_property?: string;
+  properties: AiPropertyDraft[];
+}
+
+interface AiLinkTypeDraft {
+  name: string;
+  display_name: string;
+  description?: string;
+  source_type_name: string;
+  target_type_name: string;
+  cardinality: string;
+}
+
+interface AiActionTypeDraft {
+  name: string;
+  display_name: string;
+  description?: string;
+  object_type_name?: string;
+  logic_type: string;
+  parameters: Record<string, unknown>;
+  logic_config: Record<string, unknown>;
+}
+
+interface AiOntologyPlan {
+  object_types: AiObjectTypeDraft[];
+  link_types: AiLinkTypeDraft[];
+  action_types: AiActionTypeDraft[];
+  _warnings?: string[];
 }
 
 const HANDLE_STYLE = { opacity: 0, width: 6, height: 6 };
@@ -26,12 +77,13 @@ const HANDLE_STYLE = { opacity: 0, width: 6, height: 6 };
 const SchemaNode = memo(function SchemaNode({ data }: NodeProps<FlowNode<SchemaNodeData>>) {
   const d = data as SchemaNodeData;
   const [hovered, setHovered] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const first3 = d.propertyNames.slice(0, 3);
   return (
     <div
       className="graph-node"
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseLeave={() => { if (!confirmOpen) setHovered(false); }}
       style={{ position: 'relative', borderColor: d.color }}
     >
       <Handle type="target" position={Position.Top} id="t-in" style={HANDLE_STYLE} />
@@ -42,6 +94,54 @@ const SchemaNode = memo(function SchemaNode({ data }: NodeProps<FlowNode<SchemaN
       <Handle type="source" position={Position.Bottom} id="b-out" style={HANDLE_STYLE} />
       <Handle type="target" position={Position.Left} id="l-in" style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Left} id="l-out" style={HANDLE_STYLE} />
+      {d.canDelete && d.onDelete && (
+        <Popconfirm
+          title={d.deleteConfirm}
+          open={confirmOpen}
+          onOpenChange={(open) => {
+            setConfirmOpen(open);
+            if (!open) setHovered(false);
+          }}
+          onConfirm={(event) => {
+            event?.stopPropagation();
+            setConfirmOpen(false);
+            d.onDelete?.();
+          }}
+          onCancel={(event) => {
+            event?.stopPropagation();
+            setConfirmOpen(false);
+          }}
+          onPopupClick={(event) => event.stopPropagation()}
+        >
+          <Button
+            type="text"
+            size="small"
+            danger
+            icon={<DeleteOutlined />}
+            aria-label={d.deleteLabel}
+            onClick={(event) => {
+              event.stopPropagation();
+              setConfirmOpen(true);
+            }}
+            style={{
+              position: 'absolute',
+              top: 6,
+              right: 6,
+              zIndex: 2,
+              width: 26,
+              height: 26,
+              minWidth: 26,
+              padding: 0,
+              borderRadius: 999,
+              background: 'var(--bg-surface)',
+              border: '1px solid var(--card-border)',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+              opacity: hovered || confirmOpen ? 1 : 0,
+              pointerEvents: hovered || confirmOpen ? 'auto' : 'none',
+            }}
+          />
+        </Popconfirm>
+      )}
       <div className="node-color-bar" style={{ background: d.color }} />
       <div className="node-content">
         <div style={{ fontSize: 9, color: d.color, fontWeight: 600, letterSpacing: '0.02em' }}>{d.name}</div>
@@ -70,6 +170,68 @@ function extractBackendDetail(error: unknown): string | undefined {
     return detail;
   }
   return undefined;
+}
+
+function normalizeAiPlan(plan: Record<string, unknown>): AiOntologyPlan {
+  const objectTypes = Array.isArray(plan.object_types) ? plan.object_types : [];
+  const linkTypes = Array.isArray(plan.link_types) ? plan.link_types : [];
+  const actionTypes = Array.isArray(plan.action_types) ? plan.action_types : [];
+  const warnings = Array.isArray(plan._warnings) ? plan._warnings.filter((item): item is string => typeof item === 'string') : [];
+
+  return {
+    object_types: objectTypes.map((item, index) => {
+      const record = (item ?? {}) as Record<string, unknown>;
+      const properties = Array.isArray(record.properties) ? record.properties : [];
+      return {
+        name: typeof record.name === 'string' ? record.name : `object_type_${index + 1}`,
+        display_name: typeof record.display_name === 'string' ? record.display_name : typeof record.name === 'string' ? record.name : `Object Type ${index + 1}`,
+        description: typeof record.description === 'string' ? record.description : '',
+        icon: typeof record.icon === 'string' ? record.icon : 'cube',
+        color: typeof record.color === 'string' ? record.color : '#4A90D9',
+        primary_key_property: typeof record.primary_key_property === 'string' ? record.primary_key_property : '',
+        properties: properties.map((prop, propIndex) => {
+          const propRecord = (prop ?? {}) as Record<string, unknown>;
+          return {
+            name: typeof propRecord.name === 'string' ? propRecord.name : `property_${propIndex + 1}`,
+            display_name: typeof propRecord.display_name === 'string' ? propRecord.display_name : typeof propRecord.name === 'string' ? propRecord.name : `Property ${propIndex + 1}`,
+            data_type: typeof propRecord.data_type === 'string' ? propRecord.data_type : 'string',
+            description: typeof propRecord.description === 'string' ? propRecord.description : '',
+            required: Boolean(propRecord.required),
+            indexed: Boolean(propRecord.indexed),
+            order: typeof propRecord.order === 'number' ? propRecord.order : propIndex,
+          };
+        }),
+      };
+    }),
+    link_types: linkTypes.map((item, index) => {
+      const record = (item ?? {}) as Record<string, unknown>;
+      return {
+        name: typeof record.name === 'string' ? record.name : `link_type_${index + 1}`,
+        display_name: typeof record.display_name === 'string' ? record.display_name : typeof record.name === 'string' ? record.name : `Link Type ${index + 1}`,
+        description: typeof record.description === 'string' ? record.description : '',
+        source_type_name: typeof record.source_type_name === 'string' ? record.source_type_name : '',
+        target_type_name: typeof record.target_type_name === 'string' ? record.target_type_name : '',
+        cardinality: typeof record.cardinality === 'string' ? record.cardinality : 'many_to_many',
+      };
+    }),
+    action_types: actionTypes.map((item, index) => {
+      const record = (item ?? {}) as Record<string, unknown>;
+      return {
+        name: typeof record.name === 'string' ? record.name : `action_type_${index + 1}`,
+        display_name: typeof record.display_name === 'string' ? record.display_name : typeof record.name === 'string' ? record.name : `Action Type ${index + 1}`,
+        description: typeof record.description === 'string' ? record.description : '',
+        object_type_name: typeof record.object_type_name === 'string' ? record.object_type_name : '',
+        logic_type: typeof record.logic_type === 'string' ? record.logic_type : 'edit_object',
+        parameters: typeof record.parameters === 'object' && record.parameters !== null ? record.parameters as Record<string, unknown> : {},
+        logic_config: typeof record.logic_config === 'object' && record.logic_config !== null ? record.logic_config as Record<string, unknown> : {},
+      };
+    }),
+    ...(warnings.length > 0 ? { _warnings: warnings } : {}),
+  };
+}
+
+function stringifyJson(value: unknown): string {
+  return JSON.stringify(value ?? {}, null, 2);
 }
 
 interface GraphCanvasProps {
@@ -189,9 +351,21 @@ export default function OntologyBuilder() {
 
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiGenerating, setAiGenerating] = useState(false);
-  const [aiPlan, setAiPlan] = useState<Record<string, unknown> | null>(null);
+  const [aiPlan, setAiPlan] = useState<AiOntologyPlan | null>(null);
   const [aiApplying, setAiApplying] = useState(false);
   const [aiDescription, setAiDescription] = useState('');
+  const [aiEditTypeModalOpen, setAiEditTypeModalOpen] = useState(false);
+  const [aiEditingTypeIndex, setAiEditingTypeIndex] = useState<number | null>(null);
+  const [aiEditLinkModalOpen, setAiEditLinkModalOpen] = useState(false);
+  const [aiEditingLinkIndex, setAiEditingLinkIndex] = useState<number | null>(null);
+  const [aiEditActionModalOpen, setAiEditActionModalOpen] = useState(false);
+  const [aiEditingActionIndex, setAiEditingActionIndex] = useState<number | null>(null);
+  const [aiEditPropModalOpen, setAiEditPropModalOpen] = useState(false);
+  const [aiEditingPropPos, setAiEditingPropPos] = useState<{ typeIndex: number; propIndex: number } | null>(null);
+  const [aiEditTypeForm] = Form.useForm();
+  const [aiEditLinkForm] = Form.useForm();
+  const [aiEditActionForm] = Form.useForm();
+  const [aiEditPropForm] = Form.useForm();
 
   const fetchActionTypes = useCallback(async () => {
     try {
@@ -208,6 +382,22 @@ export default function OntologyBuilder() {
   }, []);
 
   useEffect(() => { fetchAll(); fetchActionTypes(); fetchFunctions(); }, []);
+
+  const deleteObjectType = useCallback(async (id: string) => {
+    try {
+      await ontologyApi.deleteObjectType(id);
+      if (selectedType?.id === id) setSelectedType(null);
+      if (editingType?.id === id) {
+        setEditTypeModalOpen(false);
+        setEditingType(null);
+      }
+      setSelectedEdgeId(null);
+      message.success(t('ontology.deleted'));
+      fetchAll();
+    } catch {
+      message.error(t('ontology.deleteFailed'));
+    }
+  }, [selectedType, editingType, fetchAll, t]);
 
   const buildGraph = useCallback(() => {
     const N = objectTypes.length;
@@ -270,6 +460,12 @@ export default function OntologyBuilder() {
           propertyCount: ot.properties.length,
           propertyNames: ot.properties.map((p) => p.display_name || p.name),
           propertyLabel: t('ontology.properties'),
+          canDelete: canWrite,
+          deleteLabel: t('common.delete'),
+          deleteConfirm: t('ontology.deleteTypeConfirm'),
+          onDelete: () => {
+            void deleteObjectType(ot.id);
+          },
         } satisfies SchemaNodeData,
       };
     });
@@ -321,7 +517,7 @@ export default function OntologyBuilder() {
 
     setNodes(typeNodes);
     setEdges(linkEdges);
-  }, [objectTypes, linkTypes, t]);
+  }, [objectTypes, linkTypes, t, canWrite, deleteObjectType]);
 
   useEffect(() => { buildGraph(); }, [buildGraph]);
 
@@ -381,20 +577,6 @@ export default function OntologyBuilder() {
       propForm.resetFields();
       fetchAll();
     } catch { message.error(t('ontology.propertyAddFailed')); }
-  };
-
-  const deleteObjectType = async (id: string) => {
-    try {
-      await ontologyApi.deleteObjectType(id);
-      if (selectedType?.id === id) setSelectedType(null);
-      if (editingType?.id === id) {
-        setEditTypeModalOpen(false);
-        setEditingType(null);
-      }
-      setSelectedEdgeId(null);
-      message.success(t('ontology.deleted'));
-      fetchAll();
-    } catch { message.error(t('ontology.deleteFailed')); }
   };
 
   const createActionType = async (values: Record<string, unknown>) => {
@@ -523,13 +705,230 @@ export default function OntologyBuilder() {
     } catch { message.error(t('ontology.propertyUpdateFailed')); }
   };
 
+  const openAiEditType = (typeIndex: number) => {
+    if (!aiPlan) return;
+    const draft = aiPlan.object_types[typeIndex];
+    if (!draft) return;
+    setAiEditingTypeIndex(typeIndex);
+    aiEditTypeForm.setFieldsValue({
+      name: draft.name,
+      display_name: draft.display_name,
+      description: draft.description || '',
+      color: draft.color || '#4A90D9',
+      primary_key_property: draft.primary_key_property || undefined,
+    });
+    setAiEditTypeModalOpen(true);
+  };
+
+  const updateAiObjectType = async (values: Record<string, unknown>) => {
+    if (aiEditingTypeIndex === null) return;
+    setAiPlan((prev) => {
+      if (!prev) return prev;
+      const current = prev.object_types[aiEditingTypeIndex];
+      if (!current) return prev;
+      const nextName = String(values.name || current.name).trim();
+      const nextColor = typeof values.color === 'string' ? values.color : (values.color as { toHexString: () => string })?.toHexString?.() || current.color || '#4A90D9';
+      const objectTypes = [...prev.object_types];
+      objectTypes[aiEditingTypeIndex] = {
+        ...current,
+        name: nextName,
+        display_name: String(values.display_name || current.display_name).trim(),
+        description: String(values.description || '').trim(),
+        color: nextColor,
+        primary_key_property: values.primary_key_property ? String(values.primary_key_property) : '',
+      };
+      const linkTypes = prev.link_types.map((link) => ({
+        ...link,
+        source_type_name: link.source_type_name === current.name ? nextName : link.source_type_name,
+        target_type_name: link.target_type_name === current.name ? nextName : link.target_type_name,
+      }));
+      const actionTypes = prev.action_types.map((action) => ({
+        ...action,
+        object_type_name: action.object_type_name === current.name ? nextName : action.object_type_name,
+      }));
+      return { ...prev, object_types: objectTypes, link_types: linkTypes, action_types: actionTypes };
+    });
+    setAiEditTypeModalOpen(false);
+    setAiEditingTypeIndex(null);
+  };
+
+  const deleteAiObjectType = (typeIndex: number) => {
+    setAiPlan((prev) => {
+      if (!prev) return prev;
+      const draft = prev.object_types[typeIndex];
+      if (!draft) return prev;
+      return {
+        ...prev,
+        object_types: prev.object_types.filter((_, index) => index !== typeIndex),
+        link_types: prev.link_types.filter((link) => link.source_type_name !== draft.name && link.target_type_name !== draft.name),
+        action_types: prev.action_types.filter((action) => action.object_type_name !== draft.name),
+      };
+    });
+  };
+
+  const openAiEditProperty = (typeIndex: number, propIndex: number) => {
+    if (!aiPlan) return;
+    const property = aiPlan.object_types[typeIndex]?.properties[propIndex];
+    if (!property) return;
+    setAiEditingPropPos({ typeIndex, propIndex });
+    aiEditPropForm.setFieldsValue({
+      name: property.name,
+      display_name: property.display_name,
+      data_type: property.data_type,
+      description: property.description || '',
+      required: Boolean(property.required),
+      order: property.order || 0,
+    });
+    setAiEditPropModalOpen(true);
+  };
+
+  const updateAiProperty = async (values: Record<string, unknown>) => {
+    if (!aiEditingPropPos) return;
+    setAiPlan((prev) => {
+      if (!prev) return prev;
+      const objectTypes = [...prev.object_types];
+      const currentType = objectTypes[aiEditingPropPos.typeIndex];
+      const currentProperty = currentType?.properties[aiEditingPropPos.propIndex];
+      if (!currentType || !currentProperty) return prev;
+      const properties = [...currentType.properties];
+      const nextName = String(values.name || currentProperty.name).trim();
+      properties[aiEditingPropPos.propIndex] = {
+        ...currentProperty,
+        name: nextName,
+        display_name: String(values.display_name || currentProperty.display_name).trim(),
+        data_type: String(values.data_type || currentProperty.data_type).trim(),
+        description: String(values.description || '').trim(),
+        required: Boolean(values.required),
+        order: typeof values.order === 'number' ? values.order : Number(values.order || 0),
+      };
+      objectTypes[aiEditingPropPos.typeIndex] = {
+        ...currentType,
+        properties,
+        primary_key_property: currentType.primary_key_property === currentProperty.name
+          ? nextName
+          : currentType.primary_key_property,
+      };
+      return { ...prev, object_types: objectTypes };
+    });
+    setAiEditPropModalOpen(false);
+    setAiEditingPropPos(null);
+  };
+
+  const deleteAiProperty = (typeIndex: number, propIndex: number) => {
+    setAiPlan((prev) => {
+      if (!prev) return prev;
+      const objectTypes = [...prev.object_types];
+      const currentType = objectTypes[typeIndex];
+      const currentProperty = currentType?.properties[propIndex];
+      if (!currentType || !currentProperty) return prev;
+      objectTypes[typeIndex] = {
+        ...currentType,
+        properties: currentType.properties.filter((_, index) => index !== propIndex),
+        primary_key_property: currentType.primary_key_property === currentProperty.name ? '' : currentType.primary_key_property,
+      };
+      return { ...prev, object_types: objectTypes };
+    });
+  };
+
+  const openAiEditLink = (linkIndex: number) => {
+    if (!aiPlan) return;
+    const draft = aiPlan.link_types[linkIndex];
+    if (!draft) return;
+    setAiEditingLinkIndex(linkIndex);
+    aiEditLinkForm.setFieldsValue({
+      name: draft.name,
+      display_name: draft.display_name,
+      description: draft.description || '',
+      source_type_name: draft.source_type_name,
+      target_type_name: draft.target_type_name,
+      cardinality: draft.cardinality,
+    });
+    setAiEditLinkModalOpen(true);
+  };
+
+  const updateAiLinkType = async (values: Record<string, unknown>) => {
+    if (aiEditingLinkIndex === null) return;
+    setAiPlan((prev) => {
+      if (!prev) return prev;
+      const linkTypes = [...prev.link_types];
+      const current = linkTypes[aiEditingLinkIndex];
+      if (!current) return prev;
+      linkTypes[aiEditingLinkIndex] = {
+        ...current,
+        name: String(values.name || current.name).trim(),
+        display_name: String(values.display_name || current.display_name).trim(),
+        description: String(values.description || '').trim(),
+        source_type_name: String(values.source_type_name || current.source_type_name).trim(),
+        target_type_name: String(values.target_type_name || current.target_type_name).trim(),
+        cardinality: String(values.cardinality || current.cardinality).trim(),
+      };
+      return { ...prev, link_types: linkTypes };
+    });
+    setAiEditLinkModalOpen(false);
+    setAiEditingLinkIndex(null);
+  };
+
+  const deleteAiLinkType = (linkIndex: number) => {
+    setAiPlan((prev) => prev ? { ...prev, link_types: prev.link_types.filter((_, index) => index !== linkIndex) } : prev);
+  };
+
+  const openAiEditAction = (actionIndex: number) => {
+    if (!aiPlan) return;
+    const draft = aiPlan.action_types[actionIndex];
+    if (!draft) return;
+    setAiEditingActionIndex(actionIndex);
+    aiEditActionForm.setFieldsValue({
+      name: draft.name,
+      display_name: draft.display_name,
+      description: draft.description || '',
+      object_type_name: draft.object_type_name || undefined,
+      logic_type: draft.logic_type,
+      parameters: stringifyJson(draft.parameters),
+      logic_config: stringifyJson(draft.logic_config),
+    });
+    setAiEditActionModalOpen(true);
+  };
+
+  const updateAiActionType = async (values: Record<string, unknown>) => {
+    if (aiEditingActionIndex === null) return;
+    try {
+      const parameters = values.parameters ? JSON.parse(values.parameters as string) : {};
+      const logicConfig = values.logic_config ? JSON.parse(values.logic_config as string) : {};
+      setAiPlan((prev) => {
+        if (!prev) return prev;
+        const actionTypes = [...prev.action_types];
+        const current = actionTypes[aiEditingActionIndex];
+        if (!current) return prev;
+        actionTypes[aiEditingActionIndex] = {
+          ...current,
+          name: String(values.name || current.name).trim(),
+          display_name: String(values.display_name || current.display_name).trim(),
+          description: String(values.description || '').trim(),
+          object_type_name: values.object_type_name ? String(values.object_type_name) : '',
+          logic_type: String(values.logic_type || current.logic_type).trim(),
+          parameters,
+          logic_config: logicConfig,
+        };
+        return { ...prev, action_types: actionTypes };
+      });
+      setAiEditActionModalOpen(false);
+      setAiEditingActionIndex(null);
+    } catch {
+      message.error(t('ontology.jsonFormatError'));
+    }
+  };
+
+  const deleteAiActionType = (actionIndex: number) => {
+    setAiPlan((prev) => prev ? { ...prev, action_types: prev.action_types.filter((_, index) => index !== actionIndex) } : prev);
+  };
+
   const handleAiGenerate = useCallback(async () => {
     if (!aiDescription.trim()) return;
     setAiGenerating(true);
     setAiPlan(null);
     try {
       const { data } = await ontologyApi.generateOntology(aiDescription);
-      setAiPlan(data.plan);
+      setAiPlan(normalizeAiPlan(data.plan as Record<string, unknown>));
     } catch (error) {
       message.error(extractBackendDetail(error) || t('ontology.aiGenerateFailed'));
     } finally {
@@ -1054,7 +1453,20 @@ export default function OntologyBuilder() {
       <Modal
         title={<Space><RobotOutlined style={{ color: 'var(--primary)' }} />{t('ontology.aiGenerateTitle')}</Space>}
         open={aiModalOpen}
-        onCancel={() => { if (!aiGenerating && !aiApplying) { setAiModalOpen(false); setAiPlan(null); } }}
+        onCancel={() => {
+          if (!aiGenerating && !aiApplying) {
+            setAiModalOpen(false);
+            setAiPlan(null);
+            setAiEditTypeModalOpen(false);
+            setAiEditingTypeIndex(null);
+            setAiEditLinkModalOpen(false);
+            setAiEditingLinkIndex(null);
+            setAiEditActionModalOpen(false);
+            setAiEditingActionIndex(null);
+            setAiEditPropModalOpen(false);
+            setAiEditingPropPos(null);
+          }
+        }}
         footer={null}
         width={720}
         destroyOnClose
@@ -1092,12 +1504,12 @@ export default function OntologyBuilder() {
         )}
 
         {aiPlan && !aiGenerating && (() => {
-          const otList = (aiPlan.object_types as Array<Record<string, unknown>>) || [];
-          const ltList = (aiPlan.link_types as Array<Record<string, unknown>>) || [];
-          const atList = (aiPlan.action_types as Array<Record<string, unknown>>) || [];
-          const warns = (aiPlan._warnings as string[]) || [];
+          const otList = aiPlan.object_types || [];
+          const ltList = aiPlan.link_types || [];
+          const atList = aiPlan.action_types || [];
+          const warns = aiPlan._warnings || [];
           const colorMap: Record<string, string> = {};
-          otList.forEach(ot => { colorMap[ot.name as string] = (ot.color as string) || '#4A90D9'; });
+          otList.forEach((ot) => { colorMap[ot.name] = ot.color || '#4A90D9'; });
 
           return (
           <div>
@@ -1119,6 +1531,13 @@ export default function OntologyBuilder() {
               {t('ontology.aiPreviewDesc')}
             </div>
 
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t('ontology.aiPreviewEditableHint')}
+            />
+
             <Collapse
               defaultActiveKey={['types', 'links']}
               items={[
@@ -1127,17 +1546,73 @@ export default function OntologyBuilder() {
                   label: <Space><Badge count={otList.length} style={{ backgroundColor: 'var(--primary)' }} />{t('ontology.aiObjectTypes')}</Space>,
                   children: (
                     <Space direction="vertical" size={8} style={{ width: '100%' }}>
-                      {otList.map((ot, i) => (
-                        <Card key={i} size="small" style={{ background: 'var(--bg-body)', border: '1px solid var(--card-border)', borderLeft: `3px solid ${(ot.color as string) || '#4A90D9'}` }}>
-                          <Space>
-                            <div style={{ width: 12, height: 12, borderRadius: 3, background: (ot.color as string) || '#4A90D9' }} />
-                            <Text strong>{ot.display_name as string}</Text>
-                            <Tag>{ot.name as string}</Tag>
-                            <Tag color="blue">{(ot.properties as unknown[])?.length || 0} {t('ontology.aiProperties')}</Tag>
+                      {otList.length === 0 ? (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('common.noData')} />
+                      ) : otList.map((ot, typeIndex) => (
+                        <Card
+                          key={`${ot.name}-${typeIndex}`}
+                          size="small"
+                          style={{ background: 'var(--bg-body)', border: '1px solid var(--card-border)', borderLeft: `3px solid ${ot.color || '#4A90D9'}` }}
+                          extra={
+                            <Space>
+                              <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openAiEditType(typeIndex)} disabled={aiApplying} />
+                              <Popconfirm title={t('ontology.deleteTypeConfirm')} onConfirm={() => deleteAiObjectType(typeIndex)}>
+                                <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={aiApplying} />
+                              </Popconfirm>
+                            </Space>
+                          }
+                        >
+                          <Space wrap>
+                            <div style={{ width: 12, height: 12, borderRadius: 3, background: ot.color || '#4A90D9' }} />
+                            <Text strong>{ot.display_name}</Text>
+                            <Tag>{ot.name}</Tag>
+                            <Tag color="blue">{ot.properties.length} {t('ontology.aiProperties')}</Tag>
+                            {ot.primary_key_property && <Tag color="gold">{t('ontology.primaryKey')}: {ot.primary_key_property}</Tag>}
                           </Space>
-                          {typeof ot.description === 'string' && ot.description && (
+                          {ot.description && (
                             <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-secondary)' }}>{ot.description}</div>
                           )}
+                          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {ot.properties
+                              .map((prop, originalIndex) => ({ prop, originalIndex }))
+                              .sort((a, b) => (a.prop.order || 0) - (b.prop.order || 0))
+                              .map(({ prop, originalIndex }) => (
+                              <div
+                                key={`${prop.name}-${originalIndex}`}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: 8,
+                                  padding: '8px 10px',
+                                  borderRadius: 6,
+                                  border: '1px solid var(--card-border)',
+                                  background: 'var(--bg-surface)',
+                                }}
+                              >
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <Space wrap size={[6, 6]}>
+                                    <Text strong style={{ fontSize: 13 }}>{prop.display_name}</Text>
+                                    <Tag>{prop.name}</Tag>
+                                    <Tag color="geekblue">{prop.data_type}</Tag>
+                                    {prop.required && <Tag color="red">{t('common.required')}</Tag>}
+                                    {ot.primary_key_property === prop.name && <Tag color="gold">{t('ontology.primaryKey')}</Tag>}
+                                  </Space>
+                                  {prop.description && (
+                                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-secondary)' }}>{prop.description}</div>
+                                  )}
+                                </div>
+                                <Space>
+                                  <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openAiEditProperty(typeIndex, originalIndex)} disabled={aiApplying} />
+                                  <Popconfirm title={t('ontology.deletePropertyConfirm')} onConfirm={() => deleteAiProperty(typeIndex, originalIndex)}>
+                                    <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={aiApplying} />
+                                  </Popconfirm>
+                                </Space>
+                              </div>
+                            ))}
+                            {ot.properties.length === 0 && (
+                              <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('common.noData')}</Text>
+                            )}
+                          </div>
                         </Card>
                       ))}
                     </Space>
@@ -1148,18 +1623,32 @@ export default function OntologyBuilder() {
                   label: <Space><Badge count={ltList.length} style={{ backgroundColor: '#50C878' }} />{t('ontology.aiLinkTypes')}</Space>,
                   children: (
                     <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                      {ltList.map((lt, i) => {
-                        const srcName = lt.source_type_name as string;
-                        const tgtName = lt.target_type_name as string;
+                      {ltList.length === 0 ? (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('common.noData')} />
+                      ) : ltList.map((lt, linkIndex) => {
+                        const srcName = lt.source_type_name;
+                        const tgtName = lt.target_type_name;
                         const srcColor = colorMap[srcName] || '#999';
                         const tgtColor = colorMap[tgtName] || '#999';
                         return (
-                          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-body)', border: '1px solid var(--card-border)' }}>
-                            <Tag color={srcColor} style={{ margin: 0, color: '#fff', fontWeight: 500 }}>{srcName}</Tag>
+                          <div key={`${lt.name}-${linkIndex}`} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 8px', borderRadius: 6, background: 'var(--bg-body)', border: '1px solid var(--card-border)' }}>
+                            <Tag color={srcColor} style={{ margin: 0, color: '#fff', fontWeight: 500 }}>{srcName || '—'}</Tag>
                             <ArrowRightOutlined style={{ color: 'var(--text-secondary)', fontSize: 12 }} />
-                            <Tag color={tgtColor} style={{ margin: 0, color: '#fff', fontWeight: 500 }}>{tgtName}</Tag>
-                            <Text strong style={{ fontSize: 13 }}>{lt.display_name as string}</Text>
-                            <Tag style={{ marginLeft: 'auto' }}>{lt.cardinality as string}</Tag>
+                            <Tag color={tgtColor} style={{ margin: 0, color: '#fff', fontWeight: 500 }}>{tgtName || '—'}</Tag>
+                            <div style={{ minWidth: 0, flex: 1 }}>
+                              <Text strong style={{ fontSize: 13 }}>{lt.display_name}</Text>
+                              <Space wrap size={[6, 6]} style={{ marginLeft: 8 }}>
+                                <Tag>{lt.name}</Tag>
+                                <Tag>{lt.cardinality}</Tag>
+                              </Space>
+                              {lt.description && <div style={{ marginTop: 2, fontSize: 12, color: 'var(--text-secondary)' }}>{lt.description}</div>}
+                            </div>
+                            <Space>
+                              <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openAiEditLink(linkIndex)} disabled={aiApplying} />
+                              <Popconfirm title={t('ontology.deleteLinkConfirm')} onConfirm={() => deleteAiLinkType(linkIndex)}>
+                                <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={aiApplying} />
+                              </Popconfirm>
+                            </Space>
                           </div>
                         );
                       })}
@@ -1171,12 +1660,26 @@ export default function OntologyBuilder() {
                   label: <Space><Badge count={atList.length} style={{ backgroundColor: '#FFB347' }} />{t('ontology.aiActionTypes')}</Space>,
                   children: (
                     <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                      {atList.map((at, i) => (
-                        <div key={i} style={{ fontSize: 13 }}>
-                          <ThunderboltOutlined style={{ marginRight: 6, color: 'var(--color-yellow)' }} />
-                          <Text strong>{at.display_name as string}</Text>
-                          <Tag style={{ marginLeft: 8 }}>{at.logic_type as string}</Tag>
-                          {typeof at.object_type_name === 'string' && at.object_type_name && <Tag color={colorMap[at.object_type_name]}>{at.object_type_name}</Tag>}
+                      {atList.length === 0 ? (
+                        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('common.noData')} />
+                      ) : atList.map((at, actionIndex) => (
+                        <div key={`${at.name}-${actionIndex}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '8px 10px', borderRadius: 6, background: 'var(--bg-body)', border: '1px solid var(--card-border)' }}>
+                          <ThunderboltOutlined style={{ marginTop: 4, color: 'var(--color-yellow)' }} />
+                          <div style={{ flex: 1, minWidth: 0, fontSize: 13 }}>
+                            <Space wrap size={[6, 6]}>
+                              <Text strong>{at.display_name}</Text>
+                              <Tag>{at.name}</Tag>
+                              <Tag>{at.logic_type}</Tag>
+                              {at.object_type_name && <Tag color={colorMap[at.object_type_name]}>{at.object_type_name}</Tag>}
+                            </Space>
+                            {at.description && <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>{at.description}</div>}
+                          </div>
+                          <Space>
+                            <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openAiEditAction(actionIndex)} disabled={aiApplying} />
+                            <Popconfirm title={t('ontology.deleteActionConfirm')} onConfirm={() => deleteAiActionType(actionIndex)}>
+                              <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={aiApplying} />
+                            </Popconfirm>
+                          </Space>
                         </div>
                       ))}
                     </Space>
@@ -1199,6 +1702,133 @@ export default function OntologyBuilder() {
           </div>
           );
         })()}
+      </Modal>
+
+      <Modal
+        title={t('ontology.editObjectType')}
+        open={aiEditTypeModalOpen}
+        onCancel={() => { setAiEditTypeModalOpen(false); setAiEditingTypeIndex(null); }}
+        onOk={() => aiEditTypeForm.submit()}
+        okText={t('common.save')}
+      >
+        <Form form={aiEditTypeForm} onFinish={updateAiObjectType} layout="vertical">
+          <Form.Item name="name" label={t('ontology.apiName')} rules={[{ required: true }, { pattern: /^[a-z_][a-z0-9_]*$/, message: t('ontology.snakeCaseHint') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="display_name" label={t('ontology.displayName')} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="description" label={t('common.description')}>
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="primary_key_property" label={t('ontology.primaryKey')}>
+            <Select
+              allowClear
+              options={(aiEditingTypeIndex !== null ? aiPlan?.object_types[aiEditingTypeIndex]?.properties || [] : []).map((prop) => ({
+                value: prop.name,
+                label: `${prop.display_name} (${prop.name})`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="color" label={t('ontology.color')}>
+            <ColorPicker />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={t('ontology.editProperty')}
+        open={aiEditPropModalOpen}
+        onCancel={() => { setAiEditPropModalOpen(false); setAiEditingPropPos(null); }}
+        onOk={() => aiEditPropForm.submit()}
+        okText={t('common.save')}
+      >
+        <Form form={aiEditPropForm} onFinish={updateAiProperty} layout="vertical">
+          <Form.Item name="name" label={t('ontology.apiName')} rules={[{ required: true }, { pattern: /^[a-z_][a-z0-9_]*$/, message: t('ontology.snakeCaseHint') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="display_name" label={t('ontology.displayName')} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="data_type" label={t('ontology.dataType')} rules={[{ required: true }]}>
+            <Select options={DATA_TYPES.map((dt) => ({ value: dt, label: dt }))} />
+          </Form.Item>
+          <Form.Item name="description" label={t('common.description')}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="required" label={t('common.required')} valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="order" label={t('ontology.order')}>
+            <InputNumber min={0} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={t('ontology.editLinkType')}
+        open={aiEditLinkModalOpen}
+        onCancel={() => { setAiEditLinkModalOpen(false); setAiEditingLinkIndex(null); }}
+        onOk={() => aiEditLinkForm.submit()}
+        okText={t('common.save')}
+      >
+        <Form form={aiEditLinkForm} onFinish={updateAiLinkType} layout="vertical">
+          <Form.Item name="name" label={t('ontology.apiName')} rules={[{ required: true }, { pattern: /^[a-z_][a-z0-9_]*$/, message: t('ontology.snakeCaseHint') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="display_name" label={t('ontology.displayName')} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="description" label={t('common.description')}>
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="source_type_name" label={t('ontology.sourceType')} rules={[{ required: true }]}>
+            <Select options={(aiPlan?.object_types || []).map((ot) => ({ value: ot.name, label: ot.display_name }))} />
+          </Form.Item>
+          <Form.Item name="target_type_name" label={t('ontology.targetType')} rules={[{ required: true }]}>
+            <Select options={(aiPlan?.object_types || []).map((ot) => ({ value: ot.name, label: ot.display_name }))} />
+          </Form.Item>
+          <Form.Item name="cardinality" label={t('ontology.cardinality')} rules={[{ required: true }]}>
+            <Select options={CARDINALITIES} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={t('ontology.editActionType')}
+        open={aiEditActionModalOpen}
+        onCancel={() => { setAiEditActionModalOpen(false); setAiEditingActionIndex(null); }}
+        onOk={() => aiEditActionForm.submit()}
+        okText={t('common.save')}
+        width={640}
+      >
+        <Form form={aiEditActionForm} onFinish={updateAiActionType} layout="vertical">
+          <Form.Item name="name" label={t('ontology.apiName')} rules={[{ required: true }, { pattern: /^[a-z_][a-z0-9_]*$/, message: t('ontology.snakeCaseHint') }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="display_name" label={t('ontology.displayName')} rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="description" label={t('common.description')}>
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="object_type_name" label={t('ontology.actionObjectType')}>
+            <Select allowClear options={(aiPlan?.object_types || []).map((ot) => ({ value: ot.name, label: ot.display_name }))} />
+          </Form.Item>
+          <Form.Item name="logic_type" label={t('ontology.actionLogicType')} rules={[{ required: true }]}>
+            <Select options={[
+              { value: 'edit_object', label: 'Edit Object' },
+              { value: 'create_object', label: 'Create Object' },
+              { value: 'delete_object', label: 'Delete Object' },
+            ]} />
+          </Form.Item>
+          <Form.Item name="parameters" label={t('ontology.actionParameters')}>
+            <Input.TextArea rows={4} />
+          </Form.Item>
+          <Form.Item name="logic_config" label={t('ontology.actionLogicConfig')}>
+            <Input.TextArea rows={4} />
+          </Form.Item>
+        </Form>
       </Modal>
     </div>
   );

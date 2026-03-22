@@ -79,7 +79,18 @@ docker info | grep -A5 "Registry Mirrors"
 
 ### 2.2 上传代码
 
-从开发机同步代码到服务器（排除不需要的目录）：
+推荐直接在开发机项目根目录使用内置脚本完成同步与发布：
+
+```bash
+export ONTOFORGE_REMOTE_HOST=10.201.0.202
+export ONTOFORGE_REMOTE_USER=root
+export ONTOFORGE_REMOTE_DIR=/root/ontoforge
+# export ONTOFORGE_SSH_PASSWORD='your-password'
+
+./scripts/deploy_remote.sh
+```
+
+如需手工排查或不使用脚本，也可以直接执行 `rsync`：
 
 ```bash
 rsync -avz --progress \
@@ -94,6 +105,10 @@ rsync -avz --progress \
 ```
 
 ### 2.3 构建并启动
+
+若已使用 `./scripts/deploy_remote.sh`，本步骤会自动完成。
+
+手工方式如下：
 
 ```bash
 ssh root@10.201.0.202
@@ -246,7 +261,18 @@ EOF
 
 ### 5.1 常规更新流程
 
-在开发机上完成代码修改后：
+日常更新以脚本为主，推荐在开发机项目根目录直接执行：
+
+```bash
+export ONTOFORGE_REMOTE_HOST=10.201.0.202
+export ONTOFORGE_REMOTE_USER=root
+export ONTOFORGE_REMOTE_DIR=/root/ontoforge
+# export ONTOFORGE_SSH_PASSWORD='your-password'
+
+./scripts/deploy_remote.sh
+```
+
+仅在需要逐步排查时，再按下面的手工流程执行：
 
 ```bash
 # 1. 同步代码到服务器
@@ -311,33 +337,60 @@ docker compose up -d
 
 ### 5.3 一键更新脚本
 
-在开发机的项目根目录保存此脚本：
+项目已内置两份远程运维脚本：
+
+- `scripts/deploy_remote.sh`：同步最新代码到远程服务器，并重建 `backend` / `frontend`
+- `scripts/rebuild_remote_demo.sh`：同步代码后，在远程重跑 Demo 数据初始化脚本，并回显核心计数
+
+首次使用前，先在开发机项目根目录设置远程环境变量：
 
 ```bash
-#!/bin/bash
-# deploy.sh — 一键部署到远程服务器
-SERVER="root@10.201.0.202"
-REMOTE_DIR="/root/ontoforge"
+export ONTOFORGE_REMOTE_HOST=10.201.0.202
+export ONTOFORGE_REMOTE_USER=root
+export ONTOFORGE_REMOTE_DIR=/root/ontoforge
 
-echo ">>> 同步代码..."
-rsync -avz --progress \
-  --exclude='.git' --exclude='node_modules' \
-  --exclude='__pycache__' --exclude='.venv' \
-  --exclude='*.pyc' --exclude='frontend/dist' \
-  -e "ssh" . ${SERVER}:${REMOTE_DIR}/
+# 若 SSH 非默认 22 端口，可额外设置
+# export ONTOFORGE_REMOTE_PORT=22
 
-echo ">>> 重建并重启服务..."
-ssh ${SERVER} "cd ${REMOTE_DIR} && docker compose build && docker compose up -d"
-
-echo ">>> 检查状态..."
-ssh ${SERVER} "cd ${REMOTE_DIR} && docker compose ps && curl -s http://localhost:8000/health"
-
-echo ">>> 部署完成！"
+# 若未配置 SSH key，可临时使用密码模式
+# export ONTOFORGE_SSH_PASSWORD='your-password'
 ```
 
+执行发布：
+
 ```bash
-chmod +x deploy.sh
-./deploy.sh
+./scripts/deploy_remote.sh
+```
+
+脚本会自动执行：
+
+- `rsync` 同步代码到远程目录
+- `docker compose up -d --build backend frontend`
+- 远程 `docker compose ps`
+- 远程健康检查 `http://localhost:8000/health`
+
+如需重建远程 Demo 数据：
+
+```bash
+chmod +x scripts/deploy_remote.sh scripts/rebuild_remote_demo.sh
+
+# 一键重建远程 Demo 数据
+./scripts/rebuild_remote_demo.sh
+```
+
+`scripts/rebuild_remote_demo.sh` 会自动执行：
+
+- 先同步最新代码
+- 远程执行 `demo/setup_demo.sh`
+- 最后输出核心计数：`agents` / `documents` / `objects` / `links`
+
+如使用 SSH key，可把上面的环境变量写入 shell profile；如仅临时执行一次，也可以直接单行运行：
+
+```bash
+ONTOFORGE_REMOTE_HOST=10.201.0.202 \
+ONTOFORGE_REMOTE_USER=root \
+ONTOFORGE_REMOTE_DIR=/root/ontoforge \
+./scripts/deploy_remote.sh
 ```
 
 ---
@@ -370,6 +423,19 @@ bash setup_demo.sh
 ### 6.3 清空重做
 
 `setup_demo.sh` 开头包含清理逻辑，重新执行即可清空并重建所有 Demo 数据。
+
+如果你是在开发机上远程维护服务器，更推荐直接用：
+
+```bash
+export ONTOFORGE_REMOTE_HOST=10.201.0.202
+export ONTOFORGE_REMOTE_USER=root
+export ONTOFORGE_REMOTE_DIR=/root/ontoforge
+# export ONTOFORGE_SSH_PASSWORD='your-password'
+
+./scripts/rebuild_remote_demo.sh
+```
+
+这样可以保证“同步代码 + 重建 Demo + 验证计数”一步完成。
 
 ---
 
@@ -733,9 +799,13 @@ docker compose ps                 # 查看状态
 docker compose logs -f backend    # 跟踪日志
 
 # ─── 更新代码 ───
-rsync -avz --exclude='.git' --exclude='node_modules' \
-  --exclude='__pycache__' -e ssh . root@10.201.0.202:/root/ontoforge/
-ssh root@10.201.0.202 "cd /root/ontoforge && docker compose restart backend"
+export ONTOFORGE_REMOTE_HOST=10.201.0.202
+export ONTOFORGE_REMOTE_USER=root
+export ONTOFORGE_REMOTE_DIR=/root/ontoforge
+./scripts/deploy_remote.sh
+
+# ─── 重建远程 Demo ───
+./scripts/rebuild_remote_demo.sh
 
 # ─── 数据备份 ───
 docker compose exec postgres pg_dump -U ontoforge ontoforge > backup.sql

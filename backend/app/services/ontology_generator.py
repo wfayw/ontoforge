@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +66,7 @@ Object Types:
 Link Types (CRITICAL — this is where most errors happen):
 - ONLY create links between DIFFERENT object types. NEVER link a type to itself.
 - source_type_name and target_type_name MUST exactly match a name from object_types array.
+- If the user's input is a command (e.g. "link X, Y, Z together"), infer the object types from the named entities and generate the appropriate link_types between them.
 - Each link name must be a clear verb phrase describing the direction (e.g. "supplier_supplies_part", "order_contains_part").
 - Do NOT create redundant/inverse links (if A→B exists, don't also create B→A for the same relationship).
 - Do NOT create links between types that have no real business relationship.
@@ -115,6 +117,185 @@ COLORS = [
     "#1ABC9C", "#E74C3C", "#3498DB", "#F39C12", "#2ECC71",
     "#E67E22", "#8E44AD", "#16A085", "#D35400", "#2980B9",
 ]
+
+COMMAND_VERB_MAP = {
+    "删除": "delete_object",
+    "删掉": "delete_object",
+    "移除": "delete_object",
+    "清理": "delete_object",
+    "edit": "edit_object",
+    "update": "edit_object",
+    "modify": "edit_object",
+    "编辑": "edit_object",
+    "修改": "edit_object",
+    "更新": "edit_object",
+    "create": "create_object",
+    "add": "create_object",
+    "新增": "create_object",
+    "创建": "create_object",
+    "添加": "create_object",
+}
+
+ZH_ENTITY_NAME_MAP = {
+    "人员": "person",
+    "员工": "employee",
+    "用户": "user",
+    "部门": "department",
+    "项目": "project",
+    "角色": "role",
+    "权限": "permission",
+    "客户": "customer",
+    "订单": "order",
+    "供应商": "supplier",
+    "零件": "part",
+    "工厂": "plant",
+    "仓库": "warehouse",
+    "商品": "product",
+}
+
+
+def _infer_logic_type(description: str) -> str:
+    lowered = description.lower()
+    for verb, logic_type in COMMAND_VERB_MAP.items():
+        if verb in description or verb in lowered:
+            return logic_type
+    return "edit_object"
+
+
+def _to_snake_case(label: str, index: int) -> str:
+    cleaned = label.strip()
+    if not cleaned:
+        return f"entity_{index + 1}"
+
+    if cleaned in ZH_ENTITY_NAME_MAP:
+        return ZH_ENTITY_NAME_MAP[cleaned]
+
+    ascii_name = re.sub(r"[^a-zA-Z0-9]+", "_", cleaned).strip("_").lower()
+    if ascii_name:
+        return ascii_name
+
+    return f"entity_{index + 1}"
+
+
+def _extract_entity_labels(description: str) -> list[str]:
+    normalized = description.strip()
+    if not normalized:
+        return []
+
+    for old, new in {
+        "、": ",",
+        "，": ",",
+        "；": ",",
+        ";": ",",
+        "。": ",",
+        "\n": ",",
+        "以及": ",",
+        "及": ",",
+        "和": ",",
+        "and": ",",
+    }.items():
+        normalized = normalized.replace(old, new)
+
+    parts = [part.strip() for part in normalized.split(",")]
+    cleaned_parts: list[str] = []
+    for part in parts:
+        part = re.sub(
+            r"^(帮我|请|需要|我要|想要|把)?\s*(删除|删掉|移除|清理|编辑|修改|更新|创建|新增|添加|管理|维护)\s*",
+            "",
+            part,
+            flags=re.IGNORECASE,
+        ).strip()
+        part = re.sub(r"\s+", " ", part).strip(" .")
+        if not part or len(part) > 20:
+            continue
+        cleaned_parts.append(part)
+
+    seen: set[str] = set()
+    labels: list[str] = []
+    for label in cleaned_parts:
+        if label in seen:
+            continue
+        seen.add(label)
+        labels.append(label)
+        if len(labels) >= 8:
+            break
+    return labels
+
+
+def _build_fallback_object_types(description: str) -> list[dict]:
+    labels = _extract_entity_labels(description)
+    object_types: list[dict] = []
+
+    for index, label in enumerate(labels):
+        api_name = _to_snake_case(label, index)
+        code_name = f"{api_name}_code" if not api_name.startswith("entity_") else "code"
+        object_types.append({
+            "name": api_name,
+            "display_name": label,
+            "description": f"由命令式输入自动补全的 {label} 类型",
+            "icon": "cube",
+            "color": COLORS[index % len(COLORS)],
+            "primary_key_property": code_name,
+            "properties": [
+                {
+                    "name": code_name,
+                    "display_name": "编码",
+                    "data_type": "string",
+                    "description": f"{label}唯一标识",
+                    "required": True,
+                    "order": 0,
+                },
+                {
+                    "name": "name",
+                    "display_name": "名称",
+                    "data_type": "string",
+                    "description": f"{label}名称",
+                    "required": True,
+                    "order": 1,
+                },
+                {
+                    "name": "status",
+                    "display_name": "状态",
+                    "data_type": "string",
+                    "description": f"{label}当前状态",
+                    "required": False,
+                    "order": 2,
+                },
+            ],
+        })
+
+    return object_types
+
+
+def _ensure_plan_has_object_types(plan: dict, description: str) -> dict:
+    object_types = plan.get("object_types") or []
+    if object_types:
+        return plan
+
+    fallback_object_types = _build_fallback_object_types(description)
+    if not fallback_object_types:
+        return plan
+
+    logic_type = _infer_logic_type(description)
+    warnings = list(plan.get("_warnings") or [])
+    warnings.append("AI 未生成对象类型，已根据输入自动补全基础对象类型草稿")
+
+    plan["object_types"] = fallback_object_types
+    if not plan.get("action_types"):
+        plan["action_types"] = [
+            {
+                "name": f"{logic_type.replace('_object', '')}_{ot['name']}",
+                "display_name": f"{ot['display_name']}{'删除' if logic_type == 'delete_object' else '编辑' if logic_type == 'edit_object' else '创建'}",
+                "description": f"由命令式输入自动补全的{ot['display_name']}操作",
+                "object_type_name": ot["name"],
+                "logic_type": logic_type,
+                "parameters": {"parameters": [{"name": "target_id", "type": "string", "required": True}]},
+                "logic_config": {"target": "{{target_id}}"} if logic_type != "create_object" else {},
+            }
+            for ot in fallback_object_types
+        ]
+    plan["_warnings"] = warnings
+    return plan
 
 
 def _validate_plan(plan: dict) -> dict:
@@ -220,6 +401,7 @@ async def generate_ontology(
     if "object_types" not in plan:
         raise ValueError("AI 返回缺少 object_types 字段")
 
+    plan = _ensure_plan_has_object_types(plan, description)
     plan = _validate_plan(plan)
 
     if plan.get("_warnings"):
@@ -279,6 +461,24 @@ async def apply_ontology_plan(db: AsyncSession, plan: dict) -> dict:
             "display_name": obj_type.display_name,
             "properties_count": len(ot_data.get("properties", [])),
         })
+
+    # Backfill name_to_id for pre-existing object types referenced by link_types/action_types.
+    # Without this, any link whose source or target already existed in the DB
+    # would be silently dropped because name_to_id only contains newly created types.
+    referenced_names: set[str] = set()
+    for lt_data in plan.get("link_types", []):
+        referenced_names.add(lt_data.get("source_type_name", ""))
+        referenced_names.add(lt_data.get("target_type_name", ""))
+    for at_data in plan.get("action_types", []):
+        referenced_names.add(at_data.get("object_type_name", ""))
+
+    missing_names = (referenced_names - set(name_to_id.keys())) & existing_names
+    if missing_names:
+        rows = await db.execute(
+            select(ObjectType.name, ObjectType.id).where(ObjectType.name.in_(missing_names))
+        )
+        for row_name, row_id in rows.fetchall():
+            name_to_id[row_name] = row_id
 
     existing_lt = await db.execute(select(LinkType.name))
     existing_lt_names: set[str] = {row[0] for row in existing_lt.fetchall()}
